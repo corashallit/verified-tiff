@@ -9,7 +9,7 @@ use verified_tiff::{native,native_samples as ns};
 impl Handle{
     pub fn native_ok(&self)->R<()>{
         let m=&self.meta;
-        if m.photo==6 && !self.jpeg_rgb && !self.ycbcr_raw(){return Err((NOTIMPL,"native subsampled YCbCr not implemented; request JPEGCOLORMODE_RGB"));}
+        if m.photo==6 && matches!(m.compression,6|7) && !self.jpeg_rgb{return Err((NOTIMPL,"native subsampled YCbCr not implemented; request JPEGCOLORMODE_RGB"));}
         Ok(())
     }
     pub fn segment(&mut self,k:usize,budget:&mut Budget)->R<()>{
@@ -121,6 +121,7 @@ impl Handle{
         if m.ch<base || base>1&&m.extra.len()>m.ch-base || (m.photo==3 && (m.ch!=1 || m.map.len()!=3*(1usize<<m.bits))){return Err((INVALID,"RGBA color/extra sample layout"));}
         if m.extra.iter().any(|v|*v>2){return Err((NOTIMPL,"extra sample meaning not implemented"));}
         if self.ycbcr_raw(){self.sampling()?;}
+        else if m.photo==6&&!matches!(m.compression,6|7){return Err((NOTIMPL,"RGBA conversion of plain YCbCr samples"));}
         if matches!(m.photo,5|8)&&!matches!(m.bits,8|16){return Err((NOTIMPL,"CMYK/Lab bit depth"));}
         if m.photo==5&&scalar(&self.data,&m.tags,332,1,m.le)?!=1{return Err((NOTIMPL,"non-CMYK separated inks"));}
         Ok(())

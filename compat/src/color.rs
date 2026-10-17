@@ -3,12 +3,14 @@
 use super::*;
 use verified_tiff::{adapter_geometry as geometry,adapter_color as color};
 impl Handle {
-    pub fn ycbcr_raw(&self)->bool{self.meta.photo==6&&!matches!(self.meta.compression,6|7)}
+    /// Like libtiff, only contiguous three-sample YCbCr is stored in
+    /// subsampled clumps; other layouts hold plain samples.
+    pub fn ycbcr_raw(&self)->bool{let m=&self.meta;m.photo==6&&m.planar==1&&m.ch==3&&!matches!(m.compression,6|7)}
     pub fn sampling(&self)->R<(usize,usize)>{
         let m=&self.meta;
         if m.bits!=8||m.ch!=3||m.planar!=1||m.predictor!=1{return Err((NOTIMPL,"YCbCr requires contiguous 8-bit samples without prediction"));}
-        let (h,v)=if let Some(t)=find(&m.tags,530){if t.count!=2{return Err((INVALID,"YCbCr subsampling count"));}(value(&self.data,t,0,m.le)? as usize,value(&self.data,t,1,m.le)? as usize)}else{(2,2)};
-        if !matches!(h,1|2|4)||!matches!(v,1|2|4){return Err((INVALID,"YCbCr subsampling"));}Ok((h,v))
+        let (h,v)=m.subsampling(&self.data)?;
+        if !matches!(h,1|2|4)||!matches!(v,1|2|4){return Err((INVALID,"YCbCr subsampling"));}Ok((h as usize,v as usize))
     }
     pub fn native_layout(&self,w:usize,h:usize)->R<(usize,usize)>{
         if self.ycbcr_raw(){let (hs,vs)=self.sampling()?;Ok((product((w-1)/hs+1,hs*vs+2)?,(h-1)/vs+1))}

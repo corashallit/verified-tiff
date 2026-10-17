@@ -743,10 +743,7 @@ static uint64_t size64(TIFF *t, unsigned kind, uint32_t rows) {
 }
 uint64_t TIFFScanlineSize64(TIFF *t) { return size64(t, 0, 1); }
 tmsize_t TIFFScanlineSize(TIFF *t) { return (tmsize_t)TIFFScanlineSize64(t); }
-uint64_t TIFFRasterScanlineSize64(TIFF *t) {
-  uint64_t n = TIFFScanlineSize64(t);
-  return info(t, 11) == 2 ? n * info(t, 12) : n;
-}
+uint64_t TIFFRasterScanlineSize64(TIFF *t) { return size64(t, 4, 1); }
 tmsize_t TIFFRasterScanlineSize(TIFF *t) {
   return (tmsize_t)TIFFRasterScanlineSize64(t);
 }

@@ -105,7 +105,12 @@ impl Handle{
     fn source_channels(&self)->R<usize>{Ok(self.meta.ch)}
     fn raw_row(&self,w:usize)->R<usize>{
         if self.ycbcr_raw(){let (hs,vs)=self.sampling()?;return Ok(product((w-1)/hs+1,hs*vs+2)?/vs);}
-        if self.meta.photo==6 && !self.jpeg_rgb{return Err((NOTIMPL,"native subsampled YCbCr not implemented; request JPEGCOLORMODE_RGB"));}
+        if self.meta.photo==6 && matches!(self.meta.compression,6|7) && !self.jpeg_rgb{return Err((NOTIMPL,"native subsampled YCbCr not implemented; request JPEGCOLORMODE_RGB"));}
+        self.sample_row(w)
+    }
+    /// A row of whole samples, as libtiff's tile row and raster scanline
+    /// sizes count it, without YCbCr subsampling.
+    fn sample_row(&self,w:usize)->R<usize>{
         let row=self.meta.row_bytes(w)?;
         if self.meta.compression==34676 && self.meta.photo==32845 && !self.logluv16{product(row,2)}else{Ok(row)}
     }
@@ -281,26 +286,30 @@ pub unsafe extern "C" fn vt_size(p: *mut c_void, kind: u32, rows: u32) -> i64 {
         let h = handle(p)?;
         let m = &h.meta;
         if h.meta.width==0 {return Err((INVALID,"no selected image directory"));}
-        if kind > 3 {
+        if kind > 4 {
             return Err((INVALID, "invalid size operation"));
         }
-        if kind >= 2 && !m.tiled {
-            return Err((INVALID, "tile size requested for strip image"));
-        }
+        // Like libtiff, a strip image's tiles are its strips: image width by
+        // RowsPerStrip rows.
         let w = if kind == 2 || kind == 3 {
             m.bw
         } else {
             m.width
         };
-        let n = if kind == 0 || kind == 2 {
+        let n = if kind == 0 || kind == 2 || kind == 4 {
             1
         } else if rows == u32::MAX {
             // Like libtiff, a tiled image's strip spans RowsPerStrip rows.
-            if kind == 1 && m.tiled { m.rows.min(m.height) } else { m.bh }
+            if kind == 1 && m.tiled { m.rows.min(m.height) } else if kind == 3 && !m.tiled { m.rows } else { m.bh }
         } else {
             rows as usize
         };
-        let size=if kind==1||kind==3{if n==0{0}else{let (row,rows)=h.native_layout(w,n)?;product(row,rows)?}}else{h.raw_row(w)?};
+        let size=match kind{
+            1|3=>if n==0{0}else{let (row,rows)=h.native_layout(w,n)?;product(row,rows)?},
+            2=>h.sample_row(w)?,
+            4=>product(h.sample_row(w)?,if m.planar==2{m.ch}else{1})?,
+            _=>h.raw_row(w)?,
+        };
         if size > i64::MAX as usize {
             return Err((LIMIT, "size overflow"));
         }

@@ -98,6 +98,22 @@ class Consumers(unittest.TestCase):
    tags+= [(322,4,[bw]),(323,4,[bh])] if tiled else [(278,4,[bh])]
    with self.subTest(hs=hs,vs=vs,tiled=tiled,codec=codec,le=le):
     self.dump(assemble([tags],le=le)[0],'rgba',oracle=(hs,vs) in [(1,1),(2,1),(2,2),(4,1),(4,2),(1,2)],expected=bytes(rgba))
+ def test_chopped_and_plain_ycbcr(self):
+  # libtiff chops one uncompressed YCbCr strip into whole sampling rows of
+  # about 8 KiB, and separate YCbCr planes hold plain samples.
+  import random
+  rnd=random.Random(5);w,h=1500,41
+  for hs,vs,rows in itertools.product([1,2,4],[1,2,4],[None,41]):
+   size=-(-w//hs)*(hs*vs+2)*-(-h//vs);data=bytes(rnd.randrange(256) for _ in range(size))
+   tags=[(256,4,[w]),(257,4,[h]),(258,3,[8]*3),(259,3,[1]),(262,3,[6]),(277,3,[3]),(530,3,[hs,vs]),(273,4,('SEG',[data])),(279,4,[size])]+([(278,4,[rows])] if rows else [])
+   blob=assemble([tags])[0]
+   with self.subTest(hs=hs,vs=vs,rows=rows):
+    for mode in ['sizes','counts','native']:self.dump(blob,mode)
+    if (hs,vs) in [(1,1),(2,1),(2,2),(4,1),(4,2),(1,2)]:self.dump(blob,'rgba')
+  for tiled in [False,True]:
+   blob=assemble([scene(w=17,h=19,photo=6,tiled=tiled,separate=True)[3]])[0]
+   with self.subTest(separate=True,tiled=tiled):
+    for mode in ['sizes','native']+([] if tiled else ['scan']):self.dump(blob,mode)
  def test_temporary_decoder_context(self):
   prefix=self.path/'temporary';self.call('writer','unused',prefix)
   # libtiff can reopen the metadata-only images and returns their dimensions.
@@ -238,6 +254,20 @@ class Consumers(unittest.TestCase):
       r=subprocess.run([str(OUT/exe),str(p),mode,str(self.path/'out'),'0','1'],capture_output=True)
       got.append(b'' if r.returncode else (self.path/'out').read_bytes())
      self.assertEqual(*got)
+ def test_tile_and_raster_sizes(self):
+  # libtiff sizes tile rows and raster scanlines in whole samples, without
+  # YCbCr subsampling, and a strip image's tiles are its strips.
+  for name in ['alpha-4-2-none.tif','bilevel-strip.tif','deflate-planar16.tif','fax-g3.tif','acceptance-planar.tif']:
+   with self.subTest(name=name):self.dump((ROOT/'tests/fixtures'/name).read_bytes(),'sizes')
+  for tiled,separate,sub,rows in itertools.product([False,True],[False,True],[None,[2,2],[4,1],[1,2]],[None,4]):
+   if rows and tiled:continue
+   extra=([] if sub is None else [(530,3,sub)])
+   tags=scene(w=17,h=19,photo=6,tiled=tiled,separate=separate,extra=extra)[3]
+   if not tiled:
+    # One whole-sample segment per strip, so every count matches.
+    per=rows or 19;n=-(-19//per)*(3 if separate else 1);seg=bytes(per*17*(1 if separate else 3))
+    tags=[t for t in tags if t[0] not in (273,278,279)]+[(273,4,('SEG',[seg]*n)),(279,4,[len(seg)]*n)]+([(278,4,[rows])] if rows else [])
+   with self.subTest(tiled=tiled,separate=separate,sub=sub,rows=rows):self.dump(assemble([tags])[0],'sizes')
  def test_unknown_tag_counts(self):
   # libtiff counts the NUL it adds to an unterminated ASCII value, and an
   # empty value has no data pointer.

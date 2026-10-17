@@ -189,12 +189,15 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
         }
     }
     if m.offsets.len()!=count || m.counts.len()!=count{return Err((INVALID,"segment array count mismatch"));}
-    if chop && !tiled && planar==1 && compression==1 && photo!=6 && count==1{
-        let row=m.row_bytes(width)?;let newrows=(8192/row).max(1);
-        if newrows<rows{
+    if chop && !tiled && planar==1 && compression==1 && count==1{
+        // Like libtiff, chop into whole YCbCr sampling rows of about 8 KiB.
+        let block=if photo==6{m.subsampling(&data)?.1 as usize}else{1};
+        let bytes=m.lib_size(&data,width,Some(block))?;
+        let (newrows,stride)=if bytes>8192{(block,bytes)}else{let k=8192/bytes.max(1);(product(k as usize,block)?,k*bytes)};
+        if bytes>0&&newrows<rows{
             let n=(height-1)/newrows+1;
             if n>l.max_segments{return Err((LIMIT,"chopped strip count limit"));}
-            let pos=m.offsets.values[0];let left=m.counts.values[0];let stride=product(row,newrows)? as u64;
+            let pos=m.offsets.values[0];let left=m.counts.values[0];
             m.offsets=Striles::generated(n,pos,stride,left,false,mem)?;
             m.counts=Striles::generated(n,pos,stride,left,true,mem)?;
             m.rows=newrows;m.bh=newrows.min(height);
@@ -248,14 +251,18 @@ impl Meta{
         }
         Ok(Some(v))
     }
+    /// YCbCrSubsampling as libtiff reads it: a pair it cannot read is
+    /// ignored in favour of the default.
+    pub fn subsampling(&self,data:&[u8])->R<(u64,u64)>{
+        let pair=match find(&self.tags,530){Some(t) if t.count==2=>(value(data,t,0,self.le)?,value(data,t,1,self.le)?),_=>(2,2)};
+        Ok(if pair.0>0xffff||pair.1>0xffff{(2,2)}else{pair})
+    }
     /// libtiff's TIFFScanlineSize64 (`rows` None) or TIFFVTileSize64 for a
     /// segment `w` samples wide, which count YCbCr sampling blocks. Like
     /// libtiff, invalid subsampling or an overflow sizes it as 0.
-    fn lib_size(&self,data:&[u8],w:usize,rows:Option<usize>)->R<u64>{
+    pub fn lib_size(&self,data:&[u8],w:usize,rows:Option<usize>)->R<u64>{
         if self.planar==1&&self.photo==6&&self.ch==3{
-            // libtiff ignores a pair it cannot read and uses the default.
-            let pair=match find(&self.tags,530){Some(t) if t.count==2=>(value(data,t,0,self.le)?,value(data,t,1,self.le)?),_=>(2,2)};
-            let (h,v)=if pair.0>0xffff||pair.1>0xffff{(2,2)}else{pair};
+            let (h,v)=self.subsampling(data)?;
             if !matches!(h,1|2|4)||!matches!(v,1|2|4){return Ok(0);}
             let row=(w as u64).div_ceil(h).checked_mul(h*v+2).and_then(|n|n.checked_mul(self.bits as u64)).map(|n|n.div_ceil(8));
             return Ok(match rows{None=>row.map(|r|r/v),Some(n)=>row.and_then(|r|r.checked_mul((n as u64).div_ceil(v)))}.unwrap_or(0));
