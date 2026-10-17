@@ -83,8 +83,9 @@ Classic TIFF and BigTIFF, both byte orders, main-directory traversal, counting,
 selection and image SubIFDs are supported. `TIFFSetSubDirectory` accepts a
 valid image-directory offset, not just an already seen main directory.
 Failed selection preserves the old directory and its borrowed arrays.
-A SubIFD selected by offset has an unspecified main-chain index (`UINT32_MAX`);
-use its directory offset or return to the main chain with `TIFFSetDirectory`.
+As in libtiff, an offset in the main chain keeps that directory's number, and
+any other directory starts a new chain numbered from 0. Return to the main
+chain with `TIFFSetDirectory`.
 
 Use libtiff's exact varargs output pointer types:
 

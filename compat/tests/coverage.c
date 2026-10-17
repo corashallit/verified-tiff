@@ -96,7 +96,7 @@ int main(int argc,char **argv){
   if(!strcmp(mode,"subifd")){
     assert(TIFFIsBigTIFF(t)==atoi(argv[3]));assert(TIFFNumberOfDirectories(t)==1);uint16_t n;uint64_t *offs;
     assert(TIFFGetField(t,TIFFTAG_SUBIFD,&n,&offs)&&n==1);uint64_t child=offs[0];
-    assert(TIFFSetSubDirectory(t,child));uint32_t w;assert(TIFFGetField(t,256,&w)&&w==3);unsigned char row[16];assert(TIFFReadScanline(t,row,0,0)==1);
+    assert(TIFFSetSubDirectory(t,child)&&TIFFCurrentDirectory(t)==0);uint32_t w;assert(TIFFGetField(t,256,&w)&&w==3);unsigned char row[16];assert(TIFFReadScanline(t,row,0,0)==1);
     assert(!TIFFSetSubDirectory(t,UINT64_MAX));assert(TIFFCurrentDirOffset(t)==child);assert(TIFFGetField(t,256,&w)&&w==3);
     assert(TIFFSetDirectory(t,0));assert(TIFFGetField(t,256,&w)&&w==7);
   }else if(!strcmp(mode,"cycle")){

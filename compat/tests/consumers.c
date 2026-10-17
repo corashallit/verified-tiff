@@ -54,7 +54,10 @@ int main(int argc,char **argv){
  if(!strcmp(mode,"pages")){
   TIFF *t=TIFFOpen(argv[2],"r");assert(t&&argc==4);tdir_t n=(tdir_t)atoi(argv[3]);assert(TIFFNumberOfDirectories(t)==n);
   for(int pass=0;pass<2;pass++){tdir_t seen=1;while(TIFFReadDirectory(t))seen++;assert(seen==n&&TIFFCurrentDirectory(t)==n-1);assert(TIFFSetDirectory(t,0));}
-  assert(TIFFSetDirectory(t,n-1)&&!TIFFReadDirectory(t)&&!TIFFSetDirectory(t,n));TIFFClose(t);return 0;
+  assert(TIFFSetDirectory(t,n-1)&&!TIFFReadDirectory(t)&&!TIFFSetDirectory(t,n));
+  /* Like libtiff, a main-chain directory keeps its number through TIFFSetSubDirectory. */
+  assert(TIFFSetDirectory(t,n-1));uint64_t last=TIFFCurrentDirOffset(t);
+  assert(TIFFSetDirectory(t,0)&&TIFFSetSubDirectory(t,last)&&TIFFCurrentDirectory(t)==n-1);TIFFClose(t);return 0;
  }
  if(!strcmp(mode,"exact-limit")){
   FILE *f=fopen(argv[2],"rb");assert(f&&!fseek(f,0,SEEK_END));long n=ftell(f);assert(n>0);fclose(f);

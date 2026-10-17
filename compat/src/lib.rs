@@ -263,8 +263,13 @@ pub unsafe extern "C" fn vt_count_dirs(p: *mut c_void) -> u32 {
 pub unsafe extern "C" fn vt_set_offset(p: *mut c_void, offset: u64) -> i32 {
     guard(0, || {
         let h = handle(p)?;
-        let mut chain=Buf::new(1,&h.source.mem)?;chain.push(offset)?;
-        h.set_offset(offset,u32::MAX)?;h.chain=chain;
+        // Like libtiff, a main-chain directory keeps its number and loop
+        // history; any other directory starts a new chain as number 0.
+        let seen=page_offset(&mut h.source,h.header,None,&h.limits).ok();
+        let at=seen.as_ref().and_then(|s|s.iter().position(|o|*o==offset));
+        let mut chain=Buf::new(at.map_or(1,|i|i+1),&h.source.mem)?;
+        match (&seen,at){(Some(s),Some(i))=>chain.extend(&s[..=i])?,_=>chain.push(offset)?}
+        h.set_offset(offset,at.map_or(0,|i|i as u32))?;h.chain=chain;
         Ok(1)
     })
 }
