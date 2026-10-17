@@ -185,7 +185,9 @@ pub unsafe extern "C" fn vt_scalar(p: *mut c_void, key: u32, defaulted: i32, out
             }
         } else if key==278 && m.rows>0 {m.rows as u64} else {
             let Some(t) = find(&m.tags, key as u16) else {
-                if defaulted != 0 {
+                // libtiff's directory reader always sets these two.
+                let implied = !h.writing && h.directory_kind == 0 && matches!(key, 259 | 284);
+                if defaulted != 0 || implied {
                     if let Some(v) = def {
                         *out = v;
                         return Ok(1);

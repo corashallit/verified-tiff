@@ -36,6 +36,12 @@ int main(int argc,char **argv){
   else assert(!t&&errno==EINVAL);
   return 0;
  }
+ if(!strcmp(mode,"implied")){
+  TIFF *t=TIFFOpen(argv[2],"r");assert(t);uint16_t compression=0,planar=0;uint32_t rows=7;
+  assert(TIFFGetField(t,TIFFTAG_COMPRESSION,&compression)&&compression==COMPRESSION_NONE);
+  assert(TIFFGetField(t,TIFFTAG_PLANARCONFIG,&planar)&&planar==PLANARCONFIG_CONTIG);
+  assert(TIFFGetFieldDefaulted(t,TIFFTAG_ROWSPERSTRIP,&rows));TIFFClose(t);return 0;
+ }
  if(!strcmp(mode,"pages")){
   TIFF *t=TIFFOpen(argv[2],"r");assert(t&&argc==4);tdir_t n=(tdir_t)atoi(argv[3]);assert(TIFFNumberOfDirectories(t)==n);
   for(int pass=0;pass<2;pass++){tdir_t seen=1;while(TIFFReadDirectory(t))seen++;assert(seen==n&&TIFFCurrentDirectory(t)==n-1);assert(TIFFSetDirectory(t,0));}
