@@ -93,13 +93,18 @@ pub fn normalize_inks(data:&mut Buf<u8>,tags:&mut Buf<Tag>,le:bool,l:&Limits)->R
         let t=tags[i];
         if t.kind==3&&t.count==1&&value(data,t,0,le)?==count as u64{return Ok(());}
     }
+    set_short(data,tags,334,count,le,l)
+}
+/// Replace or insert a one-value SHORT field in candidate storage.
+fn set_short(data:&mut Buf<u8>,tags:&mut Buf<Tag>,key:u16,v:u16,le:bool,l:&Limits)->R<()>{
+    let existing=tags.iter().position(|t|t.key==key);
     let n=tags.len()+usize::from(existing.is_none());
     if n>l.max_tags{return Err((LIMIT,"directory tag limit"));}
     let end=data.len().checked_add(3).ok_or((LIMIT,"metadata size overflow"))?;
     if end>l.max_input{return Err((LIMIT,"metadata byte limit"));}
     tags.reserve(n)?;data.reserve(end)?;
-    let at=data.len();data.extend(&if le{count.to_le_bytes()}else{count.to_be_bytes()})?;data.push(0)?;
-    let t=Tag{key:334,kind:3,count:1,at,remote:None};
+    let at=data.len();data.extend(&if le{v.to_le_bytes()}else{v.to_be_bytes()})?;data.push(0)?;
+    let t=Tag{key,kind:3,count:1,at,remote:None};
     if let Some(i)=existing{tags[i]=t;}else{tags.push(t)?;tags.sort_by_key(|t|t.key);}
     Ok(())
 }
@@ -127,6 +132,12 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
     let map=small_array(&data,&tags,320,le,3*65536,&mem)?;
     let extra=small_array(&data,&tags,338,le,ch,&mem)?;
     let subifds=array(&data,&tags,330,le,l.max_directories,&mem)?;
+    // Like libtiff, a palette image needs 1 << BitsPerSample ColorMap entries
+    // per channel. From 8 bits up it reads as gray or RGB without them.
+    let photo=if photo==3&&!(bits<=16&&map.len()==3usize<<bits){
+        if bits<8{return Err((INVALID,"palette image without a usable ColorMap"));}
+        let fixed=if ch==3{2}else{1};set_short(&mut data,&mut tags,262,fixed,le,l)?;fixed as u64
+    }else{photo};
     let mut m=Meta{tags,off,next,le,width,height,ch,bits,format,photo,planar,rows,bw,bh,tiled,offsets,counts,map,extra,subifds,compression,predictor,orientation,fill};
     if chop && !tiled && planar==1 && compression==1 && photo!=6 && count==1{
         let row=m.row_bytes(width)?;let newrows=(8192/row).max(1);

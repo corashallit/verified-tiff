@@ -145,6 +145,16 @@ class Consumers(unittest.TestCase):
    n=1<<bits;cmap=[(i*37+c*101)%256*scale for c in range(3) for i in range(n)]
    blob=scene(w=17,h=19,ch=1,bits=bits,photo=3,extra=[(320,3,cmap)])[0]
    with self.subTest(bits=bits,scale=scale):self.dump(blob,'rgba')
+ def test_palette_without_usable_colormap(self):
+  # libtiff ignores a ColorMap without 1 << BitsPerSample entries per channel.
+  # An 8-bit palette image then reads as grayscale; a 4-bit one fails to open.
+  for cmap in [None,[1,2,3]]:
+   extra=[] if cmap is None else [(320,3,cmap)]
+   with self.subTest(cmap=cmap):
+    self.dump(scene(w=17,h=19,ch=1,bits=8,photo=3,extra=extra)[0],'rgba')
+    p=self.path/'in.tif';p.write_bytes(scene(w=17,h=19,ch=1,bits=4,photo=3,extra=extra)[0])
+    for exe in ['dump','dump-libtiff']:
+     self.assertEqual(subprocess.run([str(OUT/exe),str(p),'rgba',str(self.path/'out')],capture_output=True).returncode,3)
  def test_directory_reader_implied_fields(self):
   # Like libtiff, Compression and PlanarConfig read back even when absent.
   self.call('implied',ROOT/'tests/fixtures/profile-witness.tif')
