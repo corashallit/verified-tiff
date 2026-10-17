@@ -218,6 +218,26 @@ class Consumers(unittest.TestCase):
    p.write_bytes(assemble([edit(edit(tags,279,None),325,None)])[0])
    for exe in ['dump','dump-libtiff']:
     self.assertEqual(subprocess.run([str(OUT/exe),str(p),'counts',str(self.path/'out')],capture_output=True).returncode,3)
+ def test_extra_samples_and_alpha(self):
+  # libtiff counts samples beyond the photometric's color channels as
+  # unspecified extra samples and rejects ExtraSamples it cannot set. Its RGBA
+  # reader takes alpha only from the first extra sample, as associated alpha
+  # when unspecified with more than three samples, and draws grayscale alpha
+  # only for two 8-bit samples or separate planes.
+  p=self.path/'in.tif'
+  for photo,ch,extra,bits,separate in itertools.product([None,0,1,2],[1,2,4,5],[None,[0],[2],[0,2],[2,0],[999],[3],[1]*6],[8,16],[False,True]):
+   # libtiff draws separate MinIsWhite planes uninverted, a libtiff bug.
+   if photo==0 and separate and ch>1:continue
+   tags=scene(w=5,h=3,ch=ch,bits=bits,separate=separate,photo=1 if photo is None else photo)[3]
+   tags=[t for t in tags if t[0]!=262 or photo is not None]+([] if extra is None else [(338,3,extra)])
+   p.write_bytes(assemble([tags])[0])
+   with self.subTest(photo=photo,ch=ch,extra=extra,bits=bits,separate=separate):
+    for mode in ['extras','rgba']:
+     got=[]
+     for exe in ['dump','dump-libtiff']:
+      r=subprocess.run([str(OUT/exe),str(p),mode,str(self.path/'out'),'0','1'],capture_output=True)
+      got.append(b'' if r.returncode else (self.path/'out').read_bytes())
+     self.assertEqual(*got)
  def test_unknown_tag_counts(self):
   # libtiff counts the NUL it adds to an unterminated ASCII value, and an
   # empty value has no data pointer.

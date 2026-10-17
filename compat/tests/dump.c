@@ -106,6 +106,20 @@ int main(int argc, char **argv) {
     for (size_t i = 0; ok == 1 && i < (size_t)n * TIFFFieldSetGetSize(field); i++)
       fprintf(f, " %02x", d[i]);
     fputc('\n', f);
+  } else if (!strcmp(argv[2], "extras")) {
+    /* ExtraSamples as read, and the RGBA reader's alpha and photometric. */
+    uint16_t n = 0, *v = NULL, p = 0;
+    TIFFRGBAImage img;
+    char message[1024];
+    int ok = TIFFGetField(t, TIFFTAG_EXTRASAMPLES, &n, &v);
+    fprintf(f, "%d %d:", ok, TIFFGetField(t, TIFFTAG_PHOTOMETRIC, &p));
+    for (uint16_t i = 0; ok && i < n; i++)
+      fprintf(f, " %u", v[i]);
+    if (TIFFRGBAImageBegin(&img, t, 0, message)) {
+      fprintf(f, " | %u %u", img.alpha, img.photometric);
+      TIFFRGBAImageEnd(&img);
+    }
+    fputc('\n', f);
   } else if (!strcmp(argv[2], "counts")) {
     /* Segment byte counts as read, then with deferred and on-demand strile
      * loading. */

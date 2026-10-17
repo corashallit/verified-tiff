@@ -515,10 +515,16 @@ static void directory(TIFF *t) {
   TIFFGetField(t, TIFFTAG_IMAGELENGTH, &h);
   TIFFGetFieldDefaulted(t, TIFFTAG_COMPRESSION, &compression);
   record(K_CODEC, 0, compression, 0);
+  uint16_t photometric = 0, planar = PLANARCONFIG_CONTIG, spp = 1;
+  int known = TIFFGetField(t, TIFFTAG_PHOTOMETRIC, &photometric);
+  TIFFGetFieldDefaulted(t, TIFFTAG_PLANARCONFIG, &planar);
+  TIFFGetFieldDefaulted(t, TIFFTAG_SAMPLESPERPIXEL, &spp);
+  record(K_CODEC, 1,
+         known && photometric == PHOTOMETRIC_MINISWHITE &&
+             planar == PLANARCONFIG_SEPARATE && spp > 1,
+         0);
   /* Consumers, like libtiff's own tools, ask JPEG to upsample YCbCr. */
-  uint16_t photometric = 0;
-  if (compression == COMPRESSION_JPEG &&
-      TIFFGetField(t, TIFFTAG_PHOTOMETRIC, &photometric) &&
+  if (compression == COMPRESSION_JPEG && known &&
       photometric == PHOTOMETRIC_YCBCR)
     TIFFSetField(t, TIFFTAG_JPEGCOLORMODE, JPEGCOLORMODE_RGB);
   const uint64_t geometry[] = {

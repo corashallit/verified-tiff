@@ -116,7 +116,9 @@ impl Handle{
         if m.width==0{return Err((INVALID,"no selected image directory"));}
         if m.format!=1 || !matches!(m.bits,1|2|4|8|16) || !matches!(m.photo,0|1|2|3|5|6|8){return Err((NOTIMPL,"RGBA sample/color conversion not implemented"));}
         let base=if m.photo==5{4}else if matches!(m.photo,2|6|8){3}else{1};
-        if m.ch<base || m.extra.len()>m.ch-base || (m.photo==3 && (m.ch!=1 || m.map.len()!=3*(1usize<<m.bits))){return Err((INVALID,"RGBA color/extra sample layout"));}
+        // libtiff draws grayscale and palette images from the first sample
+        // however many samples are extra.
+        if m.ch<base || base>1&&m.extra.len()>m.ch-base || (m.photo==3 && (m.ch!=1 || m.map.len()!=3*(1usize<<m.bits))){return Err((INVALID,"RGBA color/extra sample layout"));}
         if m.extra.iter().any(|v|*v>2){return Err((NOTIMPL,"extra sample meaning not implemented"));}
         if self.ycbcr_raw(){self.sampling()?;}
         if matches!(m.photo,5|8)&&!matches!(m.bits,8|16){return Err((NOTIMPL,"CMYK/Lab bit depth"));}
@@ -138,7 +140,11 @@ impl Handle{
         let m=&self.meta;let width=m.width;let height=m.height;let bw=m.bw;let bh=m.bh;let bits=m.bits;
         let channels=m.ch;let planar=m.planar;let photo=m.photo;
         let base=if photo==2||photo==6{3}else{1};
-        let alpha=m.extra.iter().position(|v|*v==1||*v==2).map(|i|(channels-m.extra.len()+i,m.extra[i]));
+        // libtiff draws contiguous grayscale with alpha only for two 8-bit
+        // samples, and palette images without it. Separate planes of
+        // grayscale draw like RGB. Alpha follows the color samples.
+        let separate=planar==2&&channels>1;
+        let alpha=if base>=channels||base==1&&(photo==3||!separate&&!(bits==8&&channels==2)){None}else{m.alpha().map(|kind|(base,kind))};
         let row=m.row_bytes(bw)?;let across=(width-1)/bw+1;
         let right=x.checked_add(w).ok_or((LIMIT,"RGBA extent overflow"))?.min(width);
         let bottom=y.checked_add(h).ok_or((LIMIT,"RGBA extent overflow"))?.min(height);
@@ -192,16 +198,16 @@ impl Handle{
                             let n=1usize<<bits;for c in 0..3{rgba[c]=(self.meta.map[c*n+v as usize]>>shift) as u8;}
                         }else if ci<base{
                             let max=(1u32<<bits)-1;let v=if photo==0{max-v}else{v};
-                            let b=if bits==16 && base==1{(v>>8) as u8}else{((v*255+max/2)/max) as u8};
+                            let b=if bits==16 && base==1 && !separate{(v>>8) as u8}else{((v*255+max/2)/max) as u8};
                             if base==1{rgba[0]=b;rgba[1]=b;rgba[2]=b;}else{rgba[ci]=b;}
-                        }else if alpha.is_some_and(|(i,_)|ci==i){rgba[3]=if bits==16{if base==3{((v+128)/257) as u8}else{(v>>8) as u8}}else{((v*255)/((1u32<<bits)-1)) as u8};}
+                        }else if alpha.is_some_and(|(i,_)|ci==i){rgba[3]=if bits==16{((v+128)/257) as u8}else{((v*255)/((1u32<<bits)-1)) as u8};}
                     }
                     pack(&mut result[dest..dest+4],rgba);
                 }}
                 if cached.is_some(){self.cache=cached;}
             }
         }}
-        if !fast && base==3 && alpha.is_some_and(|(_,kind)|kind==2){
+        if !fast && (base==3||separate) && alpha.is_some_and(|(_,kind)|kind==2){
             for p in result.chunks_exact_mut(4){let mut q=unpack(p);for c in 0..3{q[c]=((q[c] as u32*q[3] as u32+127)/255) as u8;}pack(p,q);}
         }
         self.rendered=Some(result);Ok(())
@@ -282,7 +288,7 @@ impl Handle{
         b.repeated(339,m.format,m.ch)?;
         // WebP's output already carries the stored components. Suppress the
         // old raster API's lossy unassociation; the caller owns alpha meaning.
-        if !m.extra.is_empty(){if m.compression==50001 && m.extra.len()==1{b.number(338,3,2)?;}else{b.raw_tag(&self.data,*find(&m.tags,338).as_ref().unwrap())?;}}
+        if let Some(t)=find(&m.tags,338).filter(|t|t.count>0){if m.compression==50001 && t.count==1{b.number(338,3,2)?;}else{b.raw_tag(&self.data,t)?;}}
         for key in [292,293,347,512,515,529,530,531,532]{if key==515 && jif!=0{continue;}if let Some(t)=find(&m.tags,key){b.raw_tag(&self.data,t)?;}}
         for key in [519,520,521]{if jif!=0{continue;}if let Some(t)=find(&m.tags,key){
             if t.count>3{return Err((INVALID,"OJPEG table count"));}let mut offsets=[0u32;3];

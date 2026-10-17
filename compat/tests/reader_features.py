@@ -157,22 +157,25 @@ class ReaderFeatures(unittest.TestCase):
                 # these 16-bit crops. Use independent expected pixels there.
                 self.assertEqual(self.run_reader('crop',data,103,97,req,17,19,oracle=bits==8),cropped)
     def test_rgba_extra_channel_selection_and_alpha_rounding(self):
-        for bits,photo,ch,extra in itertools.product([8,16],[0,1,2],[4,6],[(0,1),(0,2),(1,2)]):
-            # Exact independent presentation expectation, including the existing
-            # grayscale alpha convention. Unspecified channels are ignored.
+        for bits,photo,ch,extra in itertools.product([8,16],[0,1,2],[2,4,6],[(1,),(2,),(0,1),(0,2),(1,2),(2,0),(2,1)]):
+            # Exact independent presentation expectation, following libtiff's
+            # RGBA reader: only the first extra sample is alpha, associated
+            # when unspecified with more than three samples, and contiguous
+            # grayscale draws alpha only for two 8-bit samples, unscaled.
             base=3 if photo==2 else 1
             if len(extra)>ch-base:continue
             data,*_=scene(w=19,h=7,ch=ch,bits=bits,photo=photo,extra=[(338,3,list(extra))])
-            mask=(1<<bits)-1;expected=bytearray();aidx=ch-len(extra)+next(i for i,v in enumerate(extra) if v)
+            mask=(1<<bits)-1;expected=bytearray();kind=extra[0] or (1 if ch>3 else 0)
+            drawn=kind and (base==3 or bits==8 and ch==2)
             for y in range(7):
                 for x in range(19):
                     values=[(x*1013+y*3137+c*9109+(mask if (x+y+c)%3==0 else 0))&mask for c in range(ch)]
                     cv=lambda v:(v>>8) if bits==16 and base==1 else (v*255+mask//2)//mask
                     pixel=[cv(mask-values[0] if photo==0 else values[c if base==3 else 0]) for c in range(3)]
-                    a=cv(values[aidx]);kind=extra[aidx-(ch-len(extra))]
+                    a=cv(values[base]) if drawn else 255
                     if base==3 and kind==2:pixel=[(v*a+127)//255 for v in pixel]
                     expected.extend(pixel+[a])
-            self.assertEqual(self.run_reader('crop',data,19,7,1,oracle=False),expected)
+            self.assertEqual(self.run_reader('crop',data,19,7,1),expected)
     def test_full_rgba_falls_back_under_cumulative_limit(self):
         w,h=512,192
         rows=[bytes((x*17+y*23+c*37)%256 for x in range(w) for c in range(3)) for y in range(h)]

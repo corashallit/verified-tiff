@@ -21,7 +21,6 @@ impl Handle {
     pub fn rgba_color(&mut self,x:usize,y:usize,w:usize,h:usize,source:usize,orientation:usize)->R<()>{
         if !(1..=8).contains(&orientation)||w==0||h==0{return Err((INVALID,"RGBA dimensions/orientation"));}
         let m=&self.meta;let width=m.width;let height=m.height;let bw=m.bw;let bh=m.bh;let bits=m.bits;let ch=m.ch;let planar=m.planar;let photo=m.photo;
-        let alpha=m.extra.iter().position(|v|*v==1||*v==2).map(|i|(ch-m.extra.len()+i,m.extra[i]));
         let (fx,fy)=geometry::orientation(source,orientation).map_err(err)?;
         let right=x.checked_add(w).ok_or((LIMIT,"RGBA extent"))?.min(width);let bottom=y.checked_add(h).ok_or((LIMIT,"RGBA extent"))?.min(height);
         if x>=right||y>=bottom{return Err((INVALID,"empty RGBA region"));}
@@ -73,9 +72,8 @@ impl Handle {
                     // Contiguous 8-bit CMYK/Lab pixels: the same conversions, read in place.
                     let src=&data[(left-bx*bw)*ch..(rr-bx*bw)*ch];
                     for (i,p) in src.chunks_exact(ch).enumerate(){
-                        let mut q=if photo==5{color::cmyk(p[0] as u16,p[1] as u16,p[2] as u16,p[3] as u16,false)}
+                        let q=if photo==5{color::cmyk(p[0] as u16,p[1] as u16,p[2] as u16,p[3] as u16,false)}
                             else{lab(p[0] as u16,p[1] as u16,p[2] as u16,bits,reference,&gamma)};
-                        if let Some((a,kind))=alpha{q[3]=p[a];if kind==2{for c in 0..3{q[c]=((q[c] as u32*q[3] as u32+127)/255) as u8;}}}
                         let to=geometry::span_pixel(w,h,right-x,bottom-y,left-x,yy-y,n,fx,fy,i);
                         decoder::pack(&mut span[to..to+4],q);
                     }
@@ -86,13 +84,12 @@ impl Handle {
                 let component=|c:usize|->u16{
                     if let Some(data)=data{let p=(lx*ch+c)*(bits/8);if bits==8{data[p] as u16}else{u16::from_ne_bytes([data[p],data[p+1]])}}else{words[off+c]}
                 };
-                let mut q=if photo==6{
+                let q=if photo==6{
                     let at=(lx/hs)*(hs*vs+2);let data=band.as_ref().unwrap();
                     ycbcr(data[at+(ly%vs)*hs+lx%hs],data[at+hs*vs],data[at+hs*vs+1],luma,rbw)
                 }else if photo==5{
                     color::cmyk(component(0),component(1),component(2),component(3),bits==16)
                 }else{lab(component(0),component(1),component(2),bits,reference,&gamma)};
-                if let Some((a,kind))=alpha{q[3]=if bits==8{component(a) as u8}else{((component(a) as u32+128)/257) as u8};if kind==2{for c in 0..3{q[c]=((q[c] as u32*q[3] as u32+127)/255) as u8;}}}
                 let to=geometry::span_pixel(w,h,right-x,bottom-y,left-x,yy-y,n,fx,fy,i);
                 decoder::pack(&mut span[to..to+4],q);
             }}

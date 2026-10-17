@@ -573,10 +573,12 @@ static int getfield(TIFF *t, uint32_t tag, va_list ap, int def) {
     return 1;
   }
   case TIFFTAG_EXTRASAMPLES: {
+    /* Extra samples implied by the photometric are only defaulted. */
+    uint16_t kind = 0;
     size_t n = 0;
-    const void *p = vt_array(t->state, tag, &n);
-    if (!n && !def)
+    if (!def && !vt_field(t->state, tag, &kind, &n))
       return 0;
+    const void *p = vt_array(t->state, tag, &n);
     uint16_t *count = va_arg(ap, uint16_t *);
     uint16_t **out = va_arg(ap, uint16_t **);
     if (!count || !out)
@@ -991,10 +993,15 @@ int TIFFRGBAImageBegin(TIFFRGBAImage *img, TIFF *t, int stop,
   img->get = TIFFRGBAImageGet;
   TIFFGetFieldDefaulted(t, 258, &img->bitspersample);
   TIFFGetFieldDefaulted(t, 277, &img->samplesperpixel);
-  TIFFGetField(t, 262, &img->photometric);
+  /* Without the tag, libtiff guesses RGB or grayscale from the samples. */
+  if (!TIFFGetField(t, 262, &img->photometric))
+    img->photometric = (uint16_t)info(t, 16);
   uint16_t count = 0, *extra = NULL;
-  if (TIFFGetField(t, TIFFTAG_EXTRASAMPLES, &count, &extra) && count)
-    img->alpha = extra[0];
+  /* An unspecified first extra sample beyond three is associated alpha. */
+  TIFFGetFieldDefaulted(t, TIFFTAG_EXTRASAMPLES, &count, &extra);
+  if (count)
+    img->alpha = extra[0] ? extra[0]
+                 : img->samplesperpixel > 3 ? EXTRASAMPLE_ASSOCALPHA : 0;
   if (img->photometric == PHOTOMETRIC_PALETTE)
     TIFFGetField(t, TIFFTAG_COLORMAP, &img->redcmap, &img->greencmap,
                  &img->bluecmap);

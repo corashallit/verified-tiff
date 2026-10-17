@@ -93,7 +93,7 @@ pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer
 pub fn metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,chop:bool,deferred:bool)->R<(Buf<u8>,Meta)>{
     let mem=source.mem.clone();let le=header.little_endian;
     let (data,tags,next,space)=raw_metadata(source,header,off,l,true)?;
-    assemble(data,tags,off,next,le,l,chop,&mem,Some((source,space,deferred)))
+    assemble(data,tags,off,next,le,l,chop,&mem,true,Some((source,space,deferred)))
 }
 /// Image-directory policy: validate the exact InkNames payload, never its
 /// extra storage terminator, and publish its actual count as NumberOfInks.
@@ -129,9 +129,27 @@ fn set_ints(data:&mut Buf<u8>,tags:&mut Buf<Tag>,key:u16,kind:u16,v:&[u64],le:bo
     if let Some(i)=existing{tags[i]=t;}else{tags.push(t)?;tags.sort_by_key(|t|t.key);}
     Ok(())
 }
-/// `repair` is the source, directory space and deferred strile loading of a
-/// directory being read, as opposed to storage rebuilt after a field change.
-pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&Limits,chop:bool,mem:&Mem,repair:Option<(&mut Source,Option<u64>,bool)>)->R<(Buf<u8>,Meta)>{
+/// Like libtiff's directory reader, reject ExtraSamples it cannot set, read
+/// Corel's 999 as unassociated alpha, and count samples beyond the
+/// photometric's color channels as unspecified extra samples
+/// (tif_dir.c setExtraSamples, tif_dirread.c _TIFFGetMaxColorChannels).
+/// The stored field keeps its bytes.
+fn read_extras(data:&[u8],tags:&[Tag],ch:usize,photo:u64,le:bool,mem:&Mem)->R<Buf<u16>>{
+    let t=find(tags,338);let n=t.map_or(0,|t|t.count);
+    if n>ch{return Err((INVALID,"ExtraSamples count"));}
+    let colors=match photo{0|1|3=>1,2|6|8|9|10|32845=>3,4|5=>4,_=>0};
+    let total=if colors>0&&ch-n>colors{ch-colors}else{n};
+    let mut v=Buf::new(total,mem)?;
+    for i in 0..total{
+        let x=if let Some(t)=t.filter(|_|i<n){value(data,t,i,le)?}else{0};
+        v.push(match x{0..=2=>x as u16,999=>2,_=>return Err((INVALID,"ExtraSamples value"))})?;
+    }
+    Ok(v)
+}
+/// `read` is false for a directory being written. `repair` is the source,
+/// directory space and deferred strile loading of a directory being read, as
+/// opposed to storage rebuilt after a field change.
+pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&Limits,chop:bool,mem:&Mem,read:bool,repair:Option<(&mut Source,Option<u64>,bool)>)->R<(Buf<u8>,Meta)>{
     normalize_inks(&mut data,&mut tags,le,l)?;
     for key in [256,257,259,262,266,274,277,278,284,317,322,323]{
         if find(&tags,key).is_some_and(|t|t.count!=1){return Err((INVALID,"scalar image field count"));}
@@ -139,8 +157,12 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
     let sc=|key,default|scalar(&data,&tags,key,default,le);
     let width=sc(256,0)? as usize;let height=sc(257,0)? as usize;
     let ch=sc(277,1)? as usize;let bits=sc(258,1)? as usize;let format=u16::try_from(sc(339,1)?).map_err(|_|(INVALID,"SampleFormat overflow"))?;
-    let photo=sc(262,if ch==1{1}else{2})?;let planar=sc(284,1)? as usize;
     let compression=u16::try_from(sc(259,1)?).map_err(|_|(INVALID,"Compression overflow"))?;let predictor=u16::try_from(sc(317,1)?).map_err(|_|(INVALID,"Predictor overflow"))?;
+    let extra=if read{read_extras(&data,&tags,ch,sc(262,0)?,le,mem)?}else{small_array(&data,&tags,338,le,ch,mem)?};
+    // Without a Photometric tag, libtiff's RGBA reader picks RGB or grayscale
+    // from the samples that are not extra samples.
+    let colors=ch-extra.len();
+    let photo=sc(262,if colors==3{2}else if matches!(compression,2|3|4|32771){0}else{1})?;let planar=sc(284,1)? as usize;
     let orientation=sc(274,1)? as usize;let fill=u16::try_from(sc(266,1)?).map_err(|_|(INVALID,"FillOrder overflow"))?;
     if width==0 || height==0 || width>u32::MAX as usize || height>u32::MAX as usize || ch==0 || ch>64 || bits==0 || bits>128 || (bits>64 && !matches!(format,5|6)) || !(1..=2).contains(&planar) || !(1..=8).contains(&orientation) || !(1..=2).contains(&fill){return Err((INVALID,"invalid image geometry/sample layout"));}
     for key in [258,339]{if let Some(t)=find(&tags,key){if t.count!=1 && t.count!=ch{return Err((INVALID,"per-sample metadata count"));}for i in 1..t.count{if value(&data,t,i,le)?!=value(&data,t,0,le)?{return Err((NOTIMPL,"mixed sample widths/formats"));}}}}
@@ -152,7 +174,6 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
     let counts=Striles::new(&data,&tags,if tiled{325}else{279},le,l.max_segments,mem)?;
     // Pixel ranges and streams are deliberately checked only when requested.
     let map=small_array(&data,&tags,320,le,3*65536,&mem)?;
-    let extra=small_array(&data,&tags,338,le,ch,&mem)?;
     let subifds=array(&data,&tags,330,le,l.max_directories,&mem)?;
     // Like libtiff, a palette image needs 1 << BitsPerSample ColorMap entries
     // per channel. From 8 bits up it reads as gray or RGB without them.
@@ -183,6 +204,12 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
 }
 impl Meta{
     pub fn row_bytes(&self,width:usize)->R<usize>{let ch=if self.planar==2{1}else{self.ch};product(product(width,ch)?,self.bits)?.checked_add(7).map(|n|n/8).ok_or((LIMIT,"row size overflow"))}
+    /// Like libtiff's RGBA reader, the kind of alpha: only the first extra
+    /// sample can be alpha, and an unspecified one is associated alpha when
+    /// there are more than three samples.
+    pub fn alpha(&self)->Option<u16>{
+        match self.extra.first(){Some(&v@(1|2))=>Some(v),Some(0) if self.ch>3=>Some(1),_=>None}
+    }
     pub fn per_plane(&self)->R<usize>{geometry::grid(self.width,self.height,self.bw,self.bh,1,usize::MAX).map(|v|v.2).map_err(err)}
     /// Like libtiff's directory reader, estimate StripByteCounts that are
     /// missing, that look wrong for a single strip, or that differ between the

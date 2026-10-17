@@ -226,6 +226,7 @@ pub unsafe extern "C" fn vt_info(p: *mut c_void, key: u32) -> u64 {
             13 => h.limits.max_output as u64,
             14 => h.header.big as u64,
             15 => h.meta.tags.len() as u64,
+            16 => m.photo,
             _ => return Err((INVALID, "unknown adapter info")),
         })
     })
@@ -238,7 +239,7 @@ pub unsafe extern "C" fn vt_array(p: *mut c_void, key: u32, len: *mut usize) -> 
             return Err((INVALID, "null array length"));
         }
         let m = &mut h.meta;
-        if find(&m.tags,key as u16).is_none(){return Ok(ptr::null());}
+        if key!=338&&find(&m.tags,key as u16).is_none(){return Ok(ptr::null());}
         if matches!(key,273|324){m.offsets.materialize(&mut h.source)?;}
         if matches!(key,279|325){m.counts.materialize(&mut h.source)?;}
         let (at, n) = match key {

@@ -30,15 +30,23 @@ static unsigned kind_of(uint64_t key) {
 
 /* Comparisons whose libtiff side is not a reference. Lossy JPEG/OJPEG pixels
  * have documented integer-transform differences, libtiff's JPEG/OJPEG sizes
- * can be for native subsampled data the shim does not produce, and the shim's
- * LogLuv data format defaults to float XYZ (docs/c-api.md). */
-static int documented(const struct transcript *t, uint64_t key) {
-  struct entry probe = {(key & 0xff00000000000000u) | (uint64_t)K_CODEC << 32,
-                        0, 0};
+ * can be for native subsampled data the shim does not produce, the shim's
+ * LogLuv data format defaults to float XYZ (docs/c-api.md), and libtiff draws
+ * separate MinIsWhite planes without inverting them (tif_getimage.c,
+ * PickSeparateCase). */
+static int64_t codec_entry(const struct transcript *t, uint64_t key,
+                           unsigned index) {
+  struct entry probe = {
+      (key & 0xff00000000000000u) | (uint64_t)K_CODEC << 32 | index, 0, 0};
   const struct entry *codec =
       bsearch(&probe, t->entries, t->count, sizeof probe, by_key);
-  int64_t compression = codec ? codec->value : 0;
+  return codec ? codec->value : 0;
+}
+static int documented(const struct transcript *t, uint64_t key) {
+  int64_t compression = codec_entry(t, key, 0);
   unsigned kind = kind_of(key), index = (unsigned)(key & 0xffffffffu);
+  if (kind == K_RGBA && codec_entry(t, key, 1))
+    return 1;
   int pixels = kind >= K_ENCODED && kind <= K_RGBA && kind != K_RAW;
   if (compression == 34676 || compression == 34677)
     return pixels || kind == K_GEOMETRY ||
