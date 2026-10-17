@@ -298,6 +298,15 @@ class Consumers(unittest.TestCase):
     raw_n=raw[:want*WIDTHS[kind]]
     tags=scene(w=4,h=3,ch=3,photo=6 if key==529 else 2)[3]+[(key,kind,raw_n)]
     with self.subTest(kind=kind,key=key,raw=raw_n.hex()):self.dump(assemble([tags])[0],'reals')
+ def test_field_pointers_outlive_other_changes(self):
+  # libtiff frees only the value of the field being set or unset, so
+  # pointers to other values stay valid. ASan runs also check the reads.
+  import struct
+  fields=[(318,5,struct.pack('<4I',313,1000,329,1000)),(34675,7,b'profile!'),(270,2,b'about\0'),(301,3,list(range(0,65536,256)))]
+  for photo,ch,extra in [(3,1,[(320,3,[(i*257)&0xffff for i in range(768)])]),(2,4,[(338,3,[2])]),(1,1,[])]:
+   for tiled in [False,True]:
+    tags=scene(w=17,h=19,ch=ch,photo=photo,tiled=tiled,extra=fields+extra)[3]
+    with self.subTest(photo=photo,tiled=tiled):self.dump(assemble([tags])[0],'lifetime')
  def test_unknown_tag_counts(self):
   # libtiff counts the NUL it adds to an unterminated ASCII value, and an
   # empty value has no data pointer.

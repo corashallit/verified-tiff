@@ -1,7 +1,7 @@
 //! Typed metadata transport at the unverified C boundary.
 use super::*;
 use verified_tiff::{native_samples::read_word,adapter_meta as checked};
-pub struct Converted{key:u32,kind:u16,n:usize,data:Buf<u64>}
+pub struct Converted{pub key:u32,kind:u16,n:usize,data:Buf<u64>}
 fn signed(v:u64,w:usize)->i64{match w{1=>v as i8 as i64,2=>v as i16 as i64,4=>v as i32 as i64,_=>v as i64}}
 /// A real array element as libtiff's float (`single`) or double array reader
 /// converts it: a rational divides in that precision, its denominator is
@@ -25,33 +25,43 @@ impl Handle{
         let w=container::field_size(kind);
         if w==0||raw.len()!=product(count,w)?{return Err((INVALID,"field storage size"));}
         if self.directory_kind==0&&key==334{
-            let candidate=Tag{key,kind,count,at:0,remote:None};
+            let candidate=Tag{key,kind,count,at:0,slot:0,remote:None};
             if count!=1||value(raw,candidate,0,self.meta.le)?>65535{return Err((INVALID,"invalid NumberOfInks"));}
             if let Some(names)=find(&self.meta.tags,333){
-                let len=checked::payload(self.data.len(),names.at,names.count,names.kind).map_err(err)?;
-                let actual=checked::ink_names(&self.data[names.at..names.at+len]).map_err(err)?;
+                let s=self.data.bytes(&names);let len=checked::payload(s.len(),names.at,names.count,names.kind).map_err(err)?;
+                let actual=checked::ink_names(&s[names.at..names.at+len]).map_err(err)?;
                 if value(raw,candidate,0,self.meta.le)?!=actual as u64{return Err((INVALID,"NumberOfInks disagrees with InkNames"));}
             }
         }
         let old=find(&self.meta.tags,key);
         let n=self.meta.tags.len()+usize::from(old.is_none());
         if n>self.limits.max_tags{return Err((LIMIT,"directory tag limit"));}
-        let total=self.data.len().checked_add(raw.len()).and_then(|v|v.checked_add(1)).ok_or((LIMIT,"metadata size overflow"))?;
-        let mut data=Buf::new(total,&self.source.mem)?;let mut tags=Buf::new(n,&self.source.mem)?;
-        for t in self.meta.tags.iter(){if t.key!=key{if t.remote.is_some(){tags.push(*t)?;continue;}let at=data.len();let bytes=product(t.count,container::field_size(t.kind))?;data.extend(&self.data[t.at..t.at+bytes])?;data.push(0)?;tags.push(Tag{at,..*t})?;}}
-        let at=data.len();data.extend(raw)?;data.push(0)?;tags.push(Tag{key,kind,count,at,remote:None})?;
+        let extra=raw.len().checked_add(1).ok_or((LIMIT,"metadata size overflow"))?;
+        let (mut data,mut tags)=self.data.arena(&self.meta.tags,Some(key),extra,&self.source.mem)?;
+        let at=data.len();data.extend(raw)?;data.push(0)?;tags.push(Tag{key,kind,count,at,slot:0,remote:None})?;
         tags.sort_by_key(|t|t.key);
         let (data,meta)=if self.directory_kind!=0||self.writing{
             if self.directory_kind==0{normalize_inks(&mut data,&mut tags,self.meta.le,&self.limits)?;}
             let (_,mut m)=empty_metadata(&self.source.mem,self.header)?;m.tags=tags;m.off=self.meta.off;m.next=self.meta.next;(data,m)
         }else{assemble(data,tags,self.meta.off,self.meta.next,self.meta.le,&self.limits,self.chop,&self.source.mem,true,None)?};
-        self.converted=Buf::new(0,&self.source.mem)?;self.data=data;self.meta=meta;self.stream=None;self.cache=None;self.rendered=None;Ok(())
+        self.commit(&data,meta)
+    }
+    /// Make a directory rebuilt in `arena` current. Like libtiff, a value that
+    /// did not change keeps its storage, conversions and derived arrays, so
+    /// the pointers getters handed out for it stay valid.
+    pub fn commit(&mut self,arena:&[u8],mut meta:Meta)->R<()>{
+        self.data.rebase(arena,&mut meta.tags,&self.meta.tags,&self.source.mem)?;
+        let place=|tags:&[Tag],key:u32|find(tags,key as u16).map(|t|(t.kind,t.count,t.at,t.slot,t.remote));
+        let (old,new)=(&self.meta.tags,&meta.tags);
+        self.converted.retain(|c|place(new,c.key).is_some()&&place(new,c.key)==place(old,c.key));
+        meta.keep_arrays(&mut self.meta);
+        self.meta=meta;self.stream=None;self.cache=None;self.rendered=None;Ok(())
     }
     fn typed(&mut self,key:u32,kind:u16)->R<Option<(*const u8,usize)>>{
         if let Some(v)=self.converted.iter().find(|v|v.key==key&&v.kind==kind){return Ok(Some((v.data.as_ptr().cast(),v.n)));}
         let Some(t)=find(&self.meta.tags,u16::try_from(key).map_err(|_|(INVALID,"tag overflow"))?)else{return Ok(None);};
         if t.remote.is_some(){return Err((NOTIMPL,"use strile accessor for deferred arrays"));}
-        checked::payload(self.data.len(),t.at,t.count,t.kind).map_err(err)?;
+        let s=self.data.bytes(&t);checked::payload(s.len(),t.at,t.count,t.kind).map_err(err)?;
         let w=container::field_size(kind);let sw=container::field_size(t.kind);
         if w==0||matches!(kind,5|10){return Err((INVALID,"invalid requested metadata type"));}
         let bytes=product(t.count,w)?.checked_add(if kind==2{1}else{0}).ok_or((LIMIT,"metadata size overflow"))?;
@@ -59,9 +69,9 @@ impl Handle{
         let mut data=Buf::new(words,&self.source.mem)?;for _ in 0..words{data.push(0u64)?;}
         for i in 0..t.count{
             let at=t.at+product(i,sw)?;
-            let value=if matches!(kind,11|12){let v=real(&self.data,at,t.kind,self.meta.le,kind==11)?;if kind==11{(v as f32).to_bits() as u64}else{v.to_bits()}}
+            let value=if matches!(kind,11|12){let v=real(s,at,t.kind,self.meta.le,kind==11)?;if kind==11{(v as f32).to_bits() as u64}else{v.to_bits()}}
             else{
-                let v=read_word(&self.data,at,sw,self.meta.le).map_err(err)?;
+                let v=read_word(s,at,sw,self.meta.le).map_err(err)?;
                 checked::convert_integer(v,t.kind,kind).map_err(err)?
             };
             // Native representation in a u64-aligned allocation; write bytes
@@ -92,7 +102,7 @@ pub unsafe extern "C" fn vt_typed(p:*mut c_void,key:u32,kind:u16,out:*mut *const
 pub unsafe extern "C" fn vt_custom_dir(p:*mut c_void,off:u64,kind:u32)->i32{
     guard(0,||{let h=handle(p)?;let (data,tags,next,_)=raw_metadata(&mut h.source,h.header,off,&h.limits,false)?;
         let (_,mut meta)=empty_metadata(&h.source.mem,h.header)?;meta.tags=tags;meta.off=off;meta.next=next;
-        let converted=Buf::new(0,&h.source.mem)?;
+        let converted=Buf::new(0,&h.source.mem)?;let data=Store::new(data,&h.source.mem)?;
         h.converted=converted;h.meta=meta;h.data=data;h.page=u32::MAX;h.directory_kind=kind;h.stream=None;h.cache=None;h.rendered=None;Ok(1)})
 }
 #[no_mangle]

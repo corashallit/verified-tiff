@@ -17,12 +17,11 @@ impl Handle{
         let kind=if self.header.big{16}else{4};let bytes=product(count,container::field_size(kind))?;
         let zeros=Buf::zeros(bytes,self.limits.max_output,&self.source.mem)?;
         for tag in if tiled{[324,325]}else{[273,279]}{if find(&self.meta.tags,tag).is_none(){self.put(tag,kind,count,&zeros)?;}}
-        // Validate assembled geometry using an independent copy; existing tag
-        // pointers remain stable until a successful mutation/selection.
-        let mut data=Buf::new(self.data.len(),&self.source.mem)?;data.extend(&self.data)?;
-        let mut tags=Buf::new(self.meta.tags.len(),&self.source.mem)?;tags.extend(&self.meta.tags)?;
+        // Validate assembled geometry using an independent copy; tag pointers
+        // stay valid for every value it leaves unchanged.
+        let (data,tags)=self.data.arena(&self.meta.tags,None,0,&self.source.mem)?;
         let (data,meta)=assemble(data,tags,0,0,le,&self.limits,false,&self.source.mem,false,None)?;
-        self.data=data;self.meta=meta;self.converted=Buf::new(0,&self.source.mem)?;Ok(())
+        self.commit(&data,meta)
     }
     fn directory_bytes(&mut self)->R<()>{
         self.write_check()?;
@@ -40,11 +39,11 @@ impl Handle{
         for t in self.meta.tags.iter(){
             let n=product(t.count,container::field_size(t.kind))?;
             append_number(&mut out,t.key as u64,2,le)?;append_number(&mut out,t.kind as u64,2,le)?;append_number(&mut out,t.count as u64,slot,le)?;
-            if n<=slot{out.extend(&self.data[t.at..t.at+n])?;for _ in n..slot{out.push(0)?;}}
+            if n<=slot{out.extend(&self.data.bytes(t)[t.at..t.at+n])?;for _ in n..slot{out.push(0)?;}}
             else{offset=offset.checked_add(7).ok_or((LIMIT,"directory size"))?&!7;append_number(&mut out,offset as u64,slot,le)?;offset+=n;}
         }
         append_number(&mut out,0,slot,le)?;
-        for t in self.meta.tags.iter(){let n=product(t.count,container::field_size(t.kind))?;if n>slot{while out.len()%8!=0{out.push(0)?;}out.extend(&self.data[t.at..t.at+n])?;}}
+        for t in self.meta.tags.iter(){let n=product(t.count,container::field_size(t.kind))?;if n>slot{while out.len()%8!=0{out.push(0)?;}out.extend(&self.data.bytes(t)[t.at..t.at+n])?;}}
         if out.len()>self.limits.max_input{return Err((LIMIT,"temporary file limit"));}
         self.rendered=Some(out);Ok(())
     }

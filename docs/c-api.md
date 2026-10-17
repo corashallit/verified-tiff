@@ -105,8 +105,8 @@ Use libtiff's exact varargs output pointer types:
 | EXIFIFD/GPSIFD pointers | `uint64_t *` |
 | JpegColorMode/SGILogDataFmt | `int *` |
 
-Metadata arrays and strings are borrowed, read-only and valid until a successful
-field mutation, directory change or close. ASCII getters provide a terminating
+Metadata arrays and strings are borrowed, read-only and, as in libtiff, valid
+until that field changes, another directory is selected or the handle closes. ASCII getters provide a terminating
 NUL. Absent optional fields return zero without writing outputs or emitting an
 error. Defaulted getters provide standard supported defaults, including color
 coefficients/reference white and transfer tables. ICC bytes are exposed without

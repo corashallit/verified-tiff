@@ -80,8 +80,7 @@ acceptance proofs. Preserve the missing-EOL and duplicate-endpoint policies in
    libtiff's OJPEG codec also rewrites YCbCrSubsampling and
    JPEGInterchangeFormat from the stream and assumes YCbCr for a missing or
    RGB photometric; the shim reads the tags as stored. Predictor reads back on
-   uncompressed images. `TIFFSetField` on a reader frees every tag pointer
-   handed out earlier. Default limits (256 MiB RGBA staging, 1024 directories,
+   uncompressed images. Default limits (256 MiB RGBA staging, 1024 directories,
    64 samples per pixel) reject large files libtiff opens. RGBA conversion of
    separate YCbCr planes and of palette images with extra samples is
    unsupported where libtiff draws them. libtiff 4.7.1 is not a reference for

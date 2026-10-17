@@ -6,19 +6,20 @@ use verified_tiff::{container as ct,native_samples::read_word};
 
 pub fn u32at(s:&[u8],p:usize,le:bool)->R<u32>{read32(s,p,le).map_err(err)}
 pub fn find(tags:&[Tag],key:u16)->Option<Tag>{tags.iter().find(|t|t.key==key).copied()}
-pub fn value(s:&[u8],t:Tag,i:usize,le:bool)->R<u64>{
+pub fn value<S:Values+?Sized>(s:&S,t:Tag,i:usize,le:bool)->R<u64>{
+    let s=s.bytes(&t);
     if t.remote.is_some(){return Err((INVALID,"deferred field requires strile accessor"));}
     if i>=t.count{return Err((INVALID,"field index out of range"));}
     let w=match t.kind{1=>1,3=>2,4|13=>4,16|18=>8,_=>return Err((NOTIMPL,"integer field type not implemented"))};
     checked::payload(s.len(),t.at,t.count,t.kind).map_err(err)?;
     read_word(s,t.at+product(i,w)?,w,le).map_err(err)
 }
-pub fn scalar(s:&[u8],tags:&[Tag],key:u16,default:u64,le:bool)->R<u64>{match find(tags,key){Some(t)=>value(s,t,0,le),None=>Ok(default)}}
-pub fn array(s:&[u8],tags:&[Tag],key:u16,le:bool,cap:usize,mem:&Mem)->R<Buf<u64>>{
+pub fn scalar<S:Values+?Sized>(s:&S,tags:&[Tag],key:u16,default:u64,le:bool)->R<u64>{match find(tags,key){Some(t)=>value(s,t,0,le),None=>Ok(default)}}
+pub fn array<S:Values+?Sized>(s:&S,tags:&[Tag],key:u16,le:bool,cap:usize,mem:&Mem)->R<Buf<u64>>{
     let t=find(tags,key);let n=t.map_or(0,|t|t.count);if n>cap{return Err((LIMIT,"metadata array limit"));}
     let mut a=Buf::new(n,mem)?;if let Some(t)=t{for i in 0..n{a.push(value(s,t,i,le)?)?;}}Ok(a)
 }
-fn small_array(s:&[u8],tags:&[Tag],key:u16,le:bool,cap:usize,mem:&Mem)->R<Buf<u16>>{
+fn small_array<S:Values+?Sized>(s:&S,tags:&[Tag],key:u16,le:bool,cap:usize,mem:&Mem)->R<Buf<u16>>{
     let t=find(tags,key);let n=t.map_or(0,|t|t.count);if n>cap{return Err((LIMIT,"metadata array limit"));}
     let mut a=Buf::new(n,mem)?;if let Some(t)=t{for i in 0..n{a.push(u16::try_from(value(s,t,i,le)?).map_err(|_|(INVALID,"16-bit metadata overflow"))?)?;}}Ok(a)
 }
@@ -74,7 +75,7 @@ pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer
     for e in entries.iter(){
         let at=data.len();
         if defer&&matches!(e.tag,273|279|324|325)&&e.count>1{
-            tags.push(Tag{key:e.tag,kind:e.kind,count:e.count as usize,at:0,remote:Some(e.offset)})?;continue;
+            tags.push(Tag{key:e.tag,kind:e.kind,count:e.count as usize,at:0,slot:0,remote:Some(e.offset)})?;continue;
         }
         let raw=source.read(e.offset,e.length as usize)?;
         // Like libtiff, count the NUL added to an ASCII value that lacks one.
@@ -86,7 +87,7 @@ pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer
         }
         let count=e.count as usize+usize::from(unterminated&&e.tag!=333);
         data.extend(&raw)?;data.push(0)?; // ASCII getters are always terminated.
-        tags.push(Tag{key:e.tag,kind:e.kind,count,at,remote:None})?;
+        tags.push(Tag{key:e.tag,kind:e.kind,count,at,slot:0,remote:None})?;
     }
     Ok((data,tags,next,space))
 }
@@ -125,7 +126,7 @@ fn set_ints(data:&mut Buf<u8>,tags:&mut Buf<Tag>,key:u16,kind:u16,v:&[u64],le:bo
     let at=data.len();
     for x in v{let b=if le{x.to_le_bytes()}else{x.to_be_bytes()};data.extend(if le{&b[..w]}else{&b[8-w..]})?;}
     data.push(0)?;
-    let t=Tag{key,kind,count:v.len(),at,remote:None};
+    let t=Tag{key,kind,count:v.len(),at,slot:0,remote:None};
     if let Some(i)=existing{tags[i]=t;}else{tags.push(t)?;tags.sort_by_key(|t|t.key);}
     Ok(())
 }
@@ -210,6 +211,15 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
     Ok((data,m))
 }
 impl Meta{
+    /// Take `old`'s derived arrays wherever they equal these, so pointers
+    /// getters handed out for them stay valid.
+    pub fn keep_arrays(&mut self,old:&mut Meta){
+        if self.map[..]==old.map[..]{std::mem::swap(&mut self.map,&mut old.map);}
+        if self.extra[..]==old.extra[..]{std::mem::swap(&mut self.extra,&mut old.extra);}
+        if self.subifds[..]==old.subifds[..]{std::mem::swap(&mut self.subifds,&mut old.subifds);}
+        if self.offsets.same(&old.offsets){std::mem::swap(&mut self.offsets,&mut old.offsets);}
+        if self.counts.same(&old.counts){std::mem::swap(&mut self.counts,&mut old.counts);}
+    }
     pub fn row_bytes(&self,width:usize)->R<usize>{let ch=if self.planar==2{1}else{self.ch};product(product(width,ch)?,self.bits)?.checked_add(7).map(|n|n/8).ok_or((LIMIT,"row size overflow"))}
     /// Like libtiff's RGBA reader, the kind of alpha: only the first extra
     /// sample can be alpha, and an unspecified one is associated alpha when
@@ -257,7 +267,7 @@ impl Meta{
     }
     /// YCbCrSubsampling as libtiff reads it: a pair it cannot read is
     /// ignored in favour of the default.
-    pub fn subsampling(&self,data:&[u8])->R<(u64,u64)>{
+    pub fn subsampling<S:Values+?Sized>(&self,data:&S)->R<(u64,u64)>{
         let pair=match find(&self.tags,530){Some(t) if t.count==2=>(value(data,t,0,self.le)?,value(data,t,1,self.le)?),_=>(2,2)};
         Ok(if pair.0>0xffff||pair.1>0xffff{(2,2)}else{pair})
     }
@@ -283,6 +293,10 @@ pub struct Striles{n:usize,remote:Option<(u64,usize,bool)>,generated:Option<(u64
 impl Striles{
     pub fn empty(mem:&Mem)->R<Self>{Ok(Self{n:0,remote:None,generated:None,values:Buf::new(0,mem)?,page:None})}
     pub fn len(&self)->usize{self.n}
+    /// Whether both describe the same values, read or not.
+    fn same(&self,o:&Self)->bool{
+        self.n==o.n&&self.remote==o.remote&&self.generated==o.generated&&(self.remote.is_some()||self.generated.is_some()||self.values[..]==o.values[..])
+    }
     pub fn new(data:&[u8],tags:&[Tag],key:u16,le:bool,cap:usize,mem:&Mem)->R<Self>{
         let mut s=Self::empty(mem)?;let Some(t)=find(tags,key)else{return Ok(s);};
         if t.count>cap{return Err((LIMIT,"segment array limit"));}

@@ -29,6 +29,7 @@ impl Memory {
 pub struct Buf<T>{v:Vec<T>,mem:Mem,charge:usize,capacity:usize}
 impl<T> Buf<T>{
     pub fn truncate(&mut self,n:usize){self.v.truncate(n);}
+    pub fn retain(&mut self,f:impl FnMut(&T)->bool){self.v.retain(f);}
     pub fn reserve(&mut self,n:usize)->R<()> {
         if n<=self.capacity{return Ok(());}
         let charge=checked::allocation(n,std::mem::size_of::<T>()).map_err(err)?;

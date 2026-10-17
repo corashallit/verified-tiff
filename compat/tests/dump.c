@@ -133,6 +133,35 @@ int main(int argc, char **argv) {
       if (pass)
         TIFFClose(d);
     }
+  } else if (!strcmp(argv[2], "lifetime")) {
+    /* Field values read through pointers taken before other fields change. */
+    uint16_t *r = NULL, *g = NULL, *b = NULL, *curve[3] = {NULL}, n = 0, *extra = NULL;
+    uint64_t *offsets = NULL;
+    float *white = NULL;
+    uint32_t size = 0;
+    const uint8_t *icc = NULL;
+    const char *text = NULL;
+    int map = TIFFGetField(t, TIFFTAG_COLORMAP, &r, &g, &b);
+    int transfer = TIFFGetField(t, TIFFTAG_TRANSFERFUNCTION, &curve[0], &curve[1], &curve[2]);
+    int extras = TIFFGetField(t, TIFFTAG_EXTRASAMPLES, &n, &extra);
+    assert(TIFFGetField(t, TIFFIsTiled(t) ? TIFFTAG_TILEOFFSETS : TIFFTAG_STRIPOFFSETS, &offsets));
+    int point = TIFFGetField(t, TIFFTAG_WHITEPOINT, &white);
+    int profile = TIFFGetField(t, TIFFTAG_ICCPROFILE, &size, &icc);
+    int described = TIFFGetField(t, TIFFTAG_IMAGEDESCRIPTION, &text);
+    assert(TIFFSetField(t, TIFFTAG_SOFTWARE, "first") && TIFFSetField(t, TIFFTAG_ARTIST, "artist") &&
+           TIFFSetField(t, TIFFTAG_SOFTWARE, "second") && TIFFUnsetField(t, TIFFTAG_ARTIST));
+    for (int i = 0; map && i < 4; i++)
+      fprintf(f, "%u %u %u ", r[i], g[i], b[i]);
+    for (int i = 0; transfer && i < 4; i++)
+      fprintf(f, "%u ", curve[0][i]);
+    for (uint16_t i = 0; extras && i < n; i++)
+      fprintf(f, "%u ", extra[i]);
+    fprintf(f, "| %llu |", (unsigned long long)offsets[0]);
+    if (point)
+      fprintf(f, " %a %a", white[0], white[1]);
+    for (uint32_t i = 0; profile && i < size; i++)
+      fprintf(f, " %02x", icc[i]);
+    fprintf(f, " %s\n", described ? text : "-");
   } else if (!strcmp(argv[2], "reals")) {
     /* Float array fields, exactly. */
     static const struct { uint32_t tag; int n; } arrays[] = {

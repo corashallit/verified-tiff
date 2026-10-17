@@ -425,7 +425,7 @@ impl Builder{
     }
     fn repeated(&mut self,key:u16,v:u16,n:usize)->R<()>{let mut s=[0u8;128];for chunk in s[..2*n].chunks_exact_mut(2){chunk.copy_from_slice(&if self.le{v.to_le_bytes()}else{v.to_be_bytes()});}self.tag(key,3,n as u32,&s[..2*n])}
     fn longs(&mut self,key:u16,v:&[u32])->R<()>{let mut s=[0;12];for (i,v) in v.iter().enumerate(){s[4*i..4*i+4].copy_from_slice(&if self.le{v.to_le_bytes()}else{v.to_be_bytes()});}self.tag(key,4,v.len() as u32,&s[..v.len()*4])}
-    fn raw_tag(&mut self,s:&[u8],t:Tag)->R<()>{let n=product(t.count,container::field_size(t.kind))?;self.tag(t.key,t.kind,u32::try_from(t.count).map_err(|_|(LIMIT,"tag count overflow"))?,&s[t.at..t.at+n])}
+    fn raw_tag<S:Values+?Sized>(&mut self,s:&S,t:Tag)->R<()>{let n=product(t.count,container::field_size(t.kind))?;self.tag(t.key,t.kind,u32::try_from(t.count).map_err(|_|(LIMIT,"tag count overflow"))?,&s.bytes(&t)[t.at..t.at+n])}
     fn finish(mut self)->R<Buf<u8>>{
         self.tags[..self.n].sort_unstable_by_key(|t|t.0);
         self.bytes[..8].copy_from_slice(if self.le{b"II\x2a\0\x08\0\0\0"}else{b"MM\0\x2a\0\0\0\x08"});

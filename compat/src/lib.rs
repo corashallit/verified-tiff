@@ -69,11 +69,16 @@ mod webp;
 mod color;
 mod metadata;
 mod writer;
+mod store;
 use storage::{Buf,Mem,Memory,Source,Backend,ReadProc,SeekProc};
 use directory::*;
+use store::{Store,Values};
 use verified_tiff::container;
+/// A field's type and count, and where its value is: at `at` in slot `slot`
+/// of the directory's store, or for a deferred strile array at `remote` in
+/// the file.
 #[derive(Clone,Copy)]
-struct Tag{key:u16,kind:u16,count:usize,at:usize,remote:Option<u64>}
+struct Tag{key:u16,kind:u16,count:usize,at:usize,slot:usize,remote:Option<u64>}
 struct Meta{
     tags:Buf<Tag>,off:u64,next:u64,le:bool,width:usize,height:usize,ch:usize,bits:usize,
     format:u16,photo:u64,planar:usize,rows:usize,bw:usize,bh:usize,tiled:bool,
@@ -83,7 +88,7 @@ struct Meta{
     compression:u16,predictor:u16,orientation:usize,fill:u16,
 }
 struct Handle{
-    source:Source,header:container::Header,data:Buf<u8>,meta:Meta,page:u32,limits:Limits,
+    source:Source,header:container::Header,data:Store,meta:Meta,page:u32,limits:Limits,
     work:usize,chain_steps:usize,chain:Buf<u64>,stream:Option<stream::Cached>,cache:Option<(usize,Buf<u8>)>,rendered:Option<Buf<u8>>,jpeg_rgb:bool,logluv16:bool,chop:bool,deferred:bool,converted:Buf<metadata::Converted>,directory_kind:u32,writing:bool,
 }
 impl Handle{
@@ -94,7 +99,7 @@ impl Handle{
         let limits=Limits{max_input:source.input,max_output:output,..Limits::conservative()};
         let chop=flags&1!=0;let deferred=flags&32!=0;
         let (data,meta)=if writing||flags&2!=0{empty_metadata(&source.mem,header)?}else{metadata(&mut source,header,header.first_ifd,&limits,chop,deferred)?};
-        let converted=Buf::new(0,&source.mem)?;
+        let converted=Buf::new(0,&source.mem)?;let data=Store::new(data,&source.mem)?;
         let mut chain=Buf::new(1,&source.mem)?;if meta.off!=0{chain.push(meta.off)?;}
         // Like libtiff, a header-only open has no current directory yet.
         let page=if !writing&&flags&2!=0{u32::MAX}else{0};
@@ -102,6 +107,7 @@ impl Handle{
     }
     fn set_offset(&mut self,off:u64,page:u32)->R<()>{
         let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop,self.deferred)?;
+        let data=Store::new(data,&self.source.mem)?;
         self.converted=Buf::new(0,&self.source.mem)?;self.directory_kind=0;self.data=data;self.meta=meta;self.page=page;self.chain_steps=0;self.stream=None;self.cache=None;self.rendered=None;self.jpeg_rgb=false;self.logluv16=false;Ok(())
     }
     fn source_channels(&self)->R<usize>{Ok(self.meta.ch)}
@@ -364,12 +370,13 @@ pub unsafe extern "C" fn vt_next(p:*mut c_void)->i32{
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_field(p:*mut c_void,key:u32,kind:*mut u16,count:*mut usize)->*const u8{
-    guard(ptr::null(),||{let h=handle(p)?;if kind.is_null()||count.is_null(){return Err((INVALID,"null metadata output"));}let Some(t)=find(&h.meta.tags,key as u16) else{return Ok(ptr::null());};if t.remote.is_some(){return Err((NOTIMPL,"use strile accessor for deferred arrays"));}*kind=t.kind;*count=t.count;Ok(h.data.as_ptr().add(t.at))})
+    guard(ptr::null(),||{let h=handle(p)?;if kind.is_null()||count.is_null(){return Err((INVALID,"null metadata output"));}let Some(t)=find(&h.meta.tags,key as u16) else{return Ok(ptr::null());};if t.remote.is_some(){return Err((NOTIMPL,"use strile accessor for deferred arrays"));}let bytes=h.data.bytes(&t);verified_tiff::adapter_meta::payload(bytes.len(),t.at,t.count,t.kind).map_err(err)?;*kind=t.kind;*count=t.count;Ok(bytes.as_ptr().add(t.at))})
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_real(p:*mut c_void,key:u32,out:*mut f32)->i32{
     guard(-1,||{let h=handle(p)?;if out.is_null(){return Err((INVALID,"null metadata output"));}let Some(t)=find(&h.meta.tags,key as u16) else{return Ok(0);};if t.count!=1{return Err((INVALID,"scalar real field count"));}
-        let v=match t.kind{5=>{let a=u32at(&h.data,t.at,h.meta.le)?;let b=u32at(&h.data,t.at+4,h.meta.le)?;if b==0{return Err((INVALID,"zero rational denominator"));}a as f32/b as f32},11=>f32::from_bits(u32at(&h.data,t.at,h.meta.le)?),12=>f64::from_bits(verified_tiff::native_samples::read_word(&h.data,t.at,8,h.meta.le).map_err(err)?) as f32,_=>return Err((NOTIMPL,"real field type not implemented"))};*out=v;Ok(1)})
+        let s=h.data.bytes(&t);
+        let v=match t.kind{5=>{let a=u32at(s,t.at,h.meta.le)?;let b=u32at(s,t.at+4,h.meta.le)?;if b==0{return Err((INVALID,"zero rational denominator"));}a as f32/b as f32},11=>f32::from_bits(u32at(s,t.at,h.meta.le)?),12=>f64::from_bits(verified_tiff::native_samples::read_word(s,t.at,8,h.meta.le).map_err(err)?) as f32,_=>return Err((NOTIMPL,"real field type not implemented"))};*out=v;Ok(1)})
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_tag(p:*mut c_void,index:usize)->u32{guard(u32::MAX,||{let h=handle(p)?;Ok(h.meta.tags.get(index).ok_or((INVALID,"tag index out of range"))?.key as u32)})}
@@ -421,12 +428,13 @@ pub unsafe extern "C" fn vt_unset(p:*mut c_void,key:u32)->i32{
         if h.directory_kind==0&&key==334&&find(&h.meta.tags,333).is_some(){return Err((INVALID,"NumberOfInks is required by InkNames"));}
         let mut tags=Buf::new(h.meta.tags.len(),&h.source.mem)?;
         for t in h.meta.tags.iter(){if t.key as u32!=key{tags.push(*t)?;}}
-        h.meta.tags=tags;h.converted=Buf::new(0,&h.source.mem)?;h.stream=None;h.cache=None;h.rendered=None;Ok(1)})
+        // Like libtiff, only the unset field's storage is freed.
+        h.data.release(&tags);h.meta.tags=tags;h.converted.retain(|c|c.key!=key);h.stream=None;h.cache=None;h.rendered=None;Ok(1)})
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_free_directory(p:*mut c_void)->i32{
     guard(0,||{let h=handle(p)?;let (data,mut meta)=empty_metadata(&h.source.mem,h.header)?;
-        meta.off=h.meta.off;meta.next=h.meta.next;
+        meta.off=h.meta.off;meta.next=h.meta.next;let data=Store::new(data,&h.source.mem)?;
         h.meta=meta;h.data=data;h.converted=Buf::new(0,&h.source.mem)?;h.stream=None;h.cache=None;h.rendered=None;Ok(1)})
 }
 
