@@ -33,16 +33,18 @@ pub fn table(source:&mut Source,header:ct::Header,off:u64,l:&Limits)->R<(Buf<u8>
     let next=read_word(&b,n*ew,nw,header.little_endian).map_err(err)?;
     Ok((b,n,next))
 }
-pub fn page_offset(source:&mut Source,header:ct::Header,page:Option<u32>,l:&Limits)->R<(u64,u32)>{
+/// Main-chain offsets up to `page`, or every distinct one. Like libtiff, a
+/// repeated offset ends the count; it hides any later page.
+pub fn page_offset(source:&mut Source,header:ct::Header,page:Option<u32>,l:&Limits)->R<Buf<u64>>{
     if page.is_some_and(|p|p as usize>=l.max_directories){return Err((LIMIT,"directory traversal limit"));}
     let mut off=header.first_ifd;let mut seen=Buf::new(l.max_directories,&source.mem)?;
     while off!=0{
-        if seen.contains(&off){return Err((40,"cyclic directory chain"));}
+        if seen.contains(&off){if page.is_none(){break;}return Err((40,"cyclic directory chain"));}
         if seen.len()==l.max_directories{return Err((LIMIT,"directory traversal limit"));}
-        if page==Some(seen.len() as u32){return Ok((off,seen.len() as u32));}
-        seen.push(off)?;off=table(source,header,off,l)?.2;
+        seen.push(off)?;if page==Some(seen.len() as u32-1){return Ok(seen);}
+        off=table(source,header,off,l)?.2;
     }
-    if page.is_some(){Err((INVALID,"directory not found"))}else{Ok((0,seen.len() as u32))}
+    if page.is_some(){Err((INVALID,"directory not found"))}else{Ok(seen)}
 }
 pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer:bool)->R<(Buf<u8>,Buf<Tag>,u64)>{
     let mem=source.mem.clone();let le=header.little_endian;

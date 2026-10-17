@@ -132,6 +132,10 @@ class Consumers(unittest.TestCase):
   for bits,predict in [(8,2),(32,3),(64,3)]:
    for le,tiled in itertools.product([False,True],repeat=2):
     p=self.path/'codec.tif';p.write_bytes(scene(w=17,h=19,ch=3,bits=bits,fmt=3 if predict==3 else 1,codec=8,predict=predict,le=le,tiled=tiled)[0]);self.call('clone',p)
+ def test_directory_loops_end_iteration(self):
+  # libtiff counts each distinct IFD once and stops a ReadDirectory loop there.
+  for name,pages in [('test_ifd_loop_to_self.tif',1),('test_ifd_loop_to_first.tif',2),('test_ifd_loop_subifd.tif',5)]:
+   self.call('pages',ROOT/'tests/upstream'/name,pages)
  def test_file_sized_input_limit(self):
   # Single-segment codecs decode a derived view that is larger than a tiny file.
   for name in ['fax-g3.tif','fax-g4-tile.tif','jpeg-gray.tif','jpeg-tile.tif','ojpeg-tables.tif','webp-tile.tif','logluv-strip.tif']:

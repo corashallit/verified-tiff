@@ -97,7 +97,7 @@ int main(int argc,char **argv){
     assert(!TIFFSetSubDirectory(t,UINT64_MAX));assert(TIFFCurrentDirOffset(t)==child);assert(TIFFGetField(t,256,&w)&&w==3);
     assert(TIFFSetDirectory(t,0));assert(TIFFGetField(t,256,&w)&&w==7);
   }else if(!strcmp(mode,"cycle")){
-    assert(TIFFNumberOfDirectories(t)==0 && errno==ELOOP);uint64_t off=TIFFCurrentDirOffset(t);
+    assert(TIFFNumberOfDirectories(t)==1);uint64_t off=TIFFCurrentDirOffset(t);
     assert(!TIFFSetDirectory(t,2));assert(TIFFCurrentDirOffset(t)==off);
     assert(!TIFFReadDirectory(t) && errno==ELOOP);
   }else assert(0);

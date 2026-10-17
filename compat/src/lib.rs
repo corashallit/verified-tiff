@@ -81,7 +81,7 @@ struct Meta{
 }
 struct Handle{
     source:Source,header:container::Header,data:Buf<u8>,meta:Meta,page:u32,limits:Limits,
-    work:usize,chain_steps:usize,stream:Option<stream::Cached>,cache:Option<(usize,Buf<u8>)>,rendered:Option<Buf<u8>>,jpeg_rgb:bool,logluv16:bool,chop:bool,converted:Buf<metadata::Converted>,directory_kind:u32,writing:bool,
+    work:usize,chain_steps:usize,chain:Buf<u64>,stream:Option<stream::Cached>,cache:Option<(usize,Buf<u8>)>,rendered:Option<Buf<u8>>,jpeg_rgb:bool,logluv16:bool,chop:bool,converted:Buf<metadata::Converted>,directory_kind:u32,writing:bool,
 }
 impl Handle{
     fn open(mut source:Source,output:usize,work:usize,flags:u32)->R<Self>{
@@ -92,7 +92,8 @@ impl Handle{
         let chop=flags&1!=0;
         let (data,meta)=if writing||flags&2!=0{empty_metadata(&source.mem,header)?}else{metadata(&mut source,header,header.first_ifd,&limits,chop)?};
         let converted=Buf::new(0,&source.mem)?;
-        Ok(Self{writing,converted,directory_kind:0,source,header,data,meta,page:0,limits,work,chain_steps:0,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop})
+        let mut chain=Buf::new(1,&source.mem)?;if meta.off!=0{chain.push(meta.off)?;}
+        Ok(Self{writing,converted,directory_kind:0,source,header,data,meta,page:0,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop})
     }
     fn set_offset(&mut self,off:u64,page:u32)->R<()>{
         let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop)?;
@@ -150,8 +151,9 @@ pub unsafe extern "C" fn vt_close(h: *mut c_void) {
 pub unsafe extern "C" fn vt_select(p: *mut c_void, page: u32) -> i32 {
     guard(0, || {
         let h = handle(p)?;
-        let off=page_offset(&mut h.source,h.header,Some(page),&h.limits)?.0;
-        h.set_offset(off,page)?;
+        let seen=page_offset(&mut h.source,h.header,Some(page),&h.limits)?;
+        let mut chain=Buf::new(seen.len(),&h.source.mem)?;chain.extend(&seen)?;drop(seen);
+        h.set_offset(chain[chain.len()-1],page)?;h.chain=chain;
         Ok(1)
     })
 }
@@ -250,14 +252,15 @@ pub unsafe extern "C" fn vt_array(p: *mut c_void, key: u32, len: *mut usize) -> 
 pub unsafe extern "C" fn vt_count_dirs(p: *mut c_void) -> u32 {
     guard(0, || {
         let h = handle(p)?;
-        Ok(page_offset(&mut h.source,h.header,None,&h.limits)?.1)
+        Ok(page_offset(&mut h.source,h.header,None,&h.limits)?.len() as u32)
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_set_offset(p: *mut c_void, offset: u64) -> i32 {
     guard(0, || {
         let h = handle(p)?;
-        h.set_offset(offset,u32::MAX)?;
+        let mut chain=Buf::new(1,&h.source.mem)?;chain.push(offset)?;
+        h.set_offset(offset,u32::MAX)?;h.chain=chain;
         Ok(1)
     })
 }
@@ -327,9 +330,11 @@ pub unsafe extern "C" fn vt_read(p:*mut c_void,kind:u32,a:u32,b:u32,c:u32,d:u32,
 #[no_mangle]
 pub unsafe extern "C" fn vt_next(p:*mut c_void)->i32{
     guard(0,||{let h=handle(p)?;let off=h.meta.next;if off==0{return Ok(0);}
-        if off==h.meta.off{return Err((40,"cyclic directory chain"));}
+        // Like libtiff, stop at any directory this chain already visited.
+        if off==h.meta.off||h.chain.contains(&off){return Err((40,"cyclic directory chain"));}
         let steps=verified_tiff::adapter_bounds::directory_step(h.chain_steps,h.limits.max_directories).map_err(err)?;
-        let page=if h.meta.off==0{0}else{h.page.saturating_add(1)};h.set_offset(off,page)?;h.chain_steps=steps;Ok(1)})
+        h.chain.reserve((h.chain.len()+1).next_power_of_two())?;
+        let page=if h.meta.off==0{0}else{h.page.saturating_add(1)};h.set_offset(off,page)?;h.chain_steps=steps;h.chain.push(off)?;Ok(1)})
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_field(p:*mut c_void,key:u32,kind:*mut u16,count:*mut usize)->*const u8{
