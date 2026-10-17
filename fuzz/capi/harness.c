@@ -45,6 +45,8 @@ static FILE *null_output;
 static int trace;
 static struct transcript log_;
 static uint64_t scope;
+/* Set once a forward scanline pass on this handle has failed. */
+static int scan_failed;
 
 static void fail(const char *what) {
   fprintf(stderr, "fuzz contract failure: %s\n", what);
@@ -395,13 +397,24 @@ static void scanlines(TIFF *t, uint32_t height) {
   TIFFGetFieldDefaulted(t, TIFFTAG_PLANARCONFIG, &planar);
   TIFFGetFieldDefaulted(t, TIFFTAG_SAMPLESPERPIXEL, &spp);
   uint16_t planes = planar == PLANARCONFIG_SEPARATE ? spp : 1;
+  int failed = 0, read = 0, late = 0;
   for (uint16_t s = 0; s < planes && s < 4; s++)
     for (uint32_t y = 0; y < height && y < MAX_ROWS; y++) {
       int ok = TIFFReadScanline(t, buf, y, s);
       result(K_SCANLINE, (uint64_t)s << 16 | y, ok == 1 ? size : ok, buf);
-      if (ok != 1)
+      if (ok != 1) {
+        late |= read;
+        failed = 1;
         break;
+      }
+      read = 1;
     }
+  /* libtiff can return stale bytes for the read below once forward passes
+   * have failed in two directories of the handle, or once one has failed
+   * after reading a row: the failed strip fill overwrites the raw data of
+   * the strip it leaves current (tif_read.c, TIFFFillStripPartial). */
+  record(K_CODEC, 2, failed && (scan_failed || late), 0);
+  scan_failed |= failed;
   /* Backward access after a forward pass. */
   if (height > 1) {
     int ok = TIFFReadScanline(t, buf, 0, 0);
@@ -555,6 +568,15 @@ static void directory(TIFF *t) {
   scanlines(t, h);
   segments(t);
   rgba(t, w, h);
+  /* libtiff's Group 3 decoder keeps a missing-EOL switch for the strips
+   * after the one that set it, and its strip and tile counts overflow to 0
+   * for images of 2^31 rows or more. */
+  int mode = 0;
+  record(K_CODEC, 3,
+         compression == COMPRESSION_CCITTFAX3 &&
+             TIFFGetField(t, TIFFTAG_FAXMODE, &mode) && (mode & FAXMODE_NOEOL),
+         0);
+  record(K_CODEC, 4, !TIFFNumberOfStrips(t) || !TIFFNumberOfTiles(t), 0);
 }
 
 static void open_one(const uint8_t *data, size_t size, const char *mode) {
@@ -631,6 +653,7 @@ int ENTRY(const uint8_t *data, size_t size) {
   static const char *const modes[] = {"r", "rc", "rh", "rm", "rC"};
   const char *mode = modes[size ? data[size - 1] % 5 : 0];
   log_.count = 0;
+  scan_failed = 0;
   scope = 0;
   open_one(data, size, mode);
   return 0;
