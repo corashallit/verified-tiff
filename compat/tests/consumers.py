@@ -175,8 +175,9 @@ class Consumers(unittest.TestCase):
    (322,4,[16]),(323,4,[0x7ffffff0]),(324,4,('SEG',[b'\0']*4)),(325,4,[1]*4)]
   self.assertEqual(self.dump(assemble([tags])[0],'sizes').split()[0],b'0')
  def test_unknown_tag_counts(self):
-  # libtiff counts the NUL it adds to an unterminated ASCII value.
-  for kind,value in [(2,b'unterminated'),(2,b'a\0b'),(2,b'done\0')]:
+  # libtiff counts the NUL it adds to an unterminated ASCII value, and an
+  # empty value has no data pointer.
+  for kind,value in [(2,b'unterminated'),(2,b'a\0b'),(2,b'done\0'),(2,b''),(1,b''),(1,b'\1\2')]:
    with self.subTest(kind=kind,value=value):self.dump(scene(extra=[(65000,kind,value)])[0],'tag65000')
  def test_read_side_sample_format(self):
   for bits,le,big in itertools.product([32,64],[False,True],[False,True]):
