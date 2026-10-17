@@ -12,6 +12,8 @@ static tmsize_t rd(thandle_t v,void *p,tmsize_t n){struct memory *m=v;m->reads++
 static tmsize_t wr(thandle_t v,void *p,tmsize_t n){struct memory *m=v;if(n<0||m->at>sizeof(m->p)||(size_t)n>sizeof(m->p)-m->at)return -1;memcpy(m->p+m->at,p,(size_t)n);m->at+=(size_t)n;if(m->n<m->at)m->n=m->at;return n;}
 static toff_t sk(thandle_t v,toff_t n,int w){struct memory *m=v;if(w!=SEEK_SET||n>sizeof(m->p))return (toff_t)-1;m->at=(size_t)n;return n;}
 static toff_t sz(thandle_t v){return ((struct memory*)v)->n;}
+/* Like libvips's target writer, which asserts that libtiff never asks. */
+static toff_t no_size(thandle_t v){(void)v;abort();}
 static int cl(thandle_t v){((struct memory*)v)->closed++;return 0;}
 static TIFFExtendProc previous;
 static void extend(TIFF *t){
@@ -100,7 +102,7 @@ int main(int argc,char **argv){
  if(!strcmp(mode,"writer")){
   for(int big=0;big<2;big++)for(int le=0;le<2;le++)for(int tiles=0;tiles<2;tiles++){
    struct memory m={0};const char *modes[]={"wb+","wl+","wb8+","wl8+"};
-   TIFF *t=TIFFClientOpen("temporary",modes[big*2+le],&m,rd,wr,sk,cl,sz,NULL,NULL);assert(t);
+   TIFF *t=TIFFClientOpen("temporary",modes[big*2+le],&m,rd,wr,sk,cl,no_size,NULL,NULL);assert(t);
    assert(TIFFSetField(t,256,16U)&&TIFFSetField(t,257,16U));
    assert(TIFFSetField(t,258,8)&&TIFFSetField(t,277,3)&&TIFFSetField(t,262,2));
    assert(TIFFSetField(t,259,1)&&TIFFSetField(t,284,1)&&TIFFSetField(t,339,1));
@@ -128,7 +130,7 @@ int main(int argc,char **argv){
   void *expected=malloc((size_t)size),*out=malloc((size_t)size),*input=malloc((size_t)insize);assert(expected&&out&&input);
   tmsize_t n=tiled?TIFFReadEncodedTile(source,0,expected,size):TIFFReadEncodedStrip(source,0,expected,size);assert(n>0);
   assert((tiled?TIFFReadRawTile(source,0,input,(tmsize_t)insize):TIFFReadRawStrip(source,0,input,(tmsize_t)insize))==(tmsize_t)insize);
-  struct memory m={0};TIFF *t=TIFFClientOpen("temporary",TIFFIsBigEndian(source)?"wb+":"wl+",&m,rd,wr,sk,cl,sz,NULL,NULL);assert(t);
+  struct memory m={0};TIFF *t=TIFFClientOpen("temporary",TIFFIsBigEndian(source)?"wb+":"wl+",&m,rd,wr,sk,cl,no_size,NULL,NULL);assert(t);
   assert(TIFFSetField(t,256,w)&&TIFFSetField(t,257,h));
   const uint32_t scalar_tags[]={258,259,262,266,277,284,317,339};
   for(size_t i=0;i<sizeof(scalar_tags)/sizeof(*scalar_tags);i++){uint16_t v=0;if(TIFFGetFieldDefaulted(source,scalar_tags[i],&v))assert(TIFFSetField(t,scalar_tags[i],v));}

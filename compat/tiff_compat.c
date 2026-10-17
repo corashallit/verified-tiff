@@ -391,7 +391,8 @@ TIFF *TIFFClientOpenExt(const char *name, const char *mode, thandle_t client,
     destroy(t);
     return NULL;
   }
-  uint64_t n = size(client);
+  /* Like libtiff, a writer never asks for the size of its new output. */
+  uint64_t n = t->flags & 4 ? 0 : size(client);
   if (n > t->options.input || n > PTRDIFF_MAX) {
     fail(t, EFBIG, __func__, "input limit");
     destroy(t);
