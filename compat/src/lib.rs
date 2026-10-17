@@ -255,7 +255,9 @@ pub unsafe extern "C" fn vt_array(p: *mut c_void, key: u32, len: *mut usize) -> 
             return Err((INVALID, "null array length"));
         }
         let m = &mut h.meta;
-        if key!=338&&find(&m.tags,key as u16).is_none(){return Ok(ptr::null());}
+        let set=|k|find(&m.tags,k).is_some();
+        let present=match key{273|324=>set(273)||set(324),279|325=>set(279)||set(325),338=>true,_=>set(key as u16)};
+        if !present{return Ok(ptr::null());}
         if matches!(key,273|324){m.offsets.materialize(&mut h.source)?;}
         if matches!(key,279|325){m.counts.materialize(&mut h.source)?;}
         let (at, n) = match key {

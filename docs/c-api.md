@@ -106,6 +106,11 @@ Use libtiff's exact varargs output pointer types:
 | EXIFIFD/GPSIFD pointers | `uint64_t *` |
 | JpegColorMode/SGILogDataFmt | `int *` |
 
+As in libtiff, an image with tile dimensions is tiled, and the strip and tile
+tags of a pair read the same offsets or byte counts, from whichever entry comes
+later in the directory. Unlike libtiff, a tiled image needs both dimensions,
+and each array needs exactly one entry per strip or tile.
+
 Metadata arrays and strings are borrowed, read-only and, as in libtiff, valid
 until that field changes, another directory is selected or the handle closes. ASCII getters provide a terminating
 NUL. Absent optional fields return zero without writing outputs or emitting an

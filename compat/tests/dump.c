@@ -120,6 +120,21 @@ int main(int argc, char **argv) {
       TIFFRGBAImageEnd(&img);
     }
     fputc('\n', f);
+  } else if (!strcmp(argv[2], "striles")) {
+    /* Whether the image is tiled, and its offsets and byte counts read
+     * through each strip and tile tag. */
+    static const uint32_t tags[] = {TIFFTAG_STRIPOFFSETS, TIFFTAG_TILEOFFSETS,
+                                    TIFFTAG_STRIPBYTECOUNTS, TIFFTAG_TILEBYTECOUNTS};
+    uint32_t n = TIFFIsTiled(t) ? TIFFNumberOfTiles(t) : TIFFNumberOfStrips(t);
+    fprintf(f, "%d %u", TIFFIsTiled(t), n);
+    for (int k = 0; k < 4; k++) {
+      uint64_t *v = NULL;
+      int ok = TIFFGetField(t, tags[k], &v);
+      fprintf(f, " | %d", ok);
+      for (uint32_t i = 0; ok && i < n; i++)
+        fprintf(f, " %llu", (unsigned long long)v[i]);
+    }
+    fputc('\n', f);
   } else if (!strcmp(argv[2], "counts")) {
     /* Segment byte counts as read, then with deferred and on-demand strile
      * loading. */

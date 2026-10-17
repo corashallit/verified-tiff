@@ -339,7 +339,9 @@ static void getter_defaults_test(void){
  TIFF*t=gray();float*p=NULL;double d=0;
  assert(TIFFGetFieldDefaulted(t,TIFFTAG_WHITEPOINT,&p));assert(TIFFGetFieldDefaulted(t,TIFFTAG_YCBCRCOEFFICIENTS,&p));assert(TIFFGetFieldDefaulted(t,TIFFTAG_REFERENCEBLACKWHITE,&p));assert(TIFFGetFieldDefaulted(t,TIFFTAG_STONITS,&d)&&d==1.);
  inject("vt_scalar",1);fault_tag=TIFFTAG_PHOTOMETRIC;fault_value=PHOTOMETRIC_YCBCR;assert(TIFFGetFieldDefaulted(t,TIFFTAG_REFERENCEBLACKWHITE,&p)&&p[2]==128.f);clear_fault();
- assert(!TIFFGetField(t,TIFFTAG_TILEOFFSETS,&p));assert(!TIFFGetField(t,TIFFTAG_TILEBYTECOUNTS,&p));
+ /* As in libtiff, the strip and tile tags of a pair read one array. */
+ uint64_t*strip=NULL,*tile=NULL;assert(TIFFGetField(t,TIFFTAG_STRIPOFFSETS,&strip)&&TIFFGetField(t,TIFFTAG_TILEOFFSETS,&tile)&&strip==tile);
+ assert(TIFFGetField(t,TIFFTAG_STRIPBYTECOUNTS,&strip)&&TIFFGetField(t,TIFFTAG_TILEBYTECOUNTS,&tile)&&strip==tile);
  assert(TIFFReadFromUserBuffer(t,0,NULL,0,NULL,0)==0); /* Zero input is rejected, outputs remain untouched. */
  uint8_t bytes[2]={17,41},out[2]={0xa5,0xa5};
  inject("vt_commit",0);/* The real bridge may reject short input before the final copy. */
@@ -359,7 +361,7 @@ static void final_branches_test(const char *planar){
  tmsize_t size=TIFFRawStripSize(t,0);assert(size>0);uint8_t*encoded=malloc((size_t)size);assert(encoded);assert(TIFFReadRawStrip(t,0,encoded,size)==size);assert(TIFFReadFromUserBuffer(t,0,encoded,size,NULL,0));inject("vt_commit",0);b[0]=0xa5;assert(!TIFFReadFromUserBuffer(t,0,encoded,size,b,1)&&b[0]==0xa5);clear_fault();free(encoded);TIFFClose(t);
  t=TIFFOpen("tests/fixtures/jpeg-ycbcr.tif","rc");assert(t);assert(TIFFSetField(t,TIFFTAG_JPEGCOLORMODE,0)&&!TIFFIsUpSampled(t));assert(TIFFSetField(t,TIFFTAG_JPEGCOLORMODE,1)&&TIFFIsUpSampled(t));inject("vt_scalar",-1);fault_tag=TIFFTAG_JPEGCOLORMODE;assert(!TIFFIsUpSampled(t));clear_fault();TIFFClose(t);
  t=TIFFOpen("tests/fixtures/logluv-pages.tif","rc");assert(t);TIFFSetTagExtender(broken_extender);assert(!TIFFReadDirectory(t));TIFFSetTagExtender(NULL);TIFFClose(t);
- t=TIFFOpen(planar,"rc");assert(t);assert(TIFFRasterScanlineSize64(t)==17*3*2);assert(TIFFReadEncodedTile(t,0,NULL,0)==0);assert(!TIFFCheckTile(t,0,0,0,3));assert(TIFFCheckTile(t,0,0,0,1));assert(TIFFComputeTile(t,0,0,0,1)==4);assert(TIFFReadTile(t,b,0,0,0,1)==16*16*2);uint64_t*offsets;assert(TIFFGetField(t,TIFFTAG_TILEOFFSETS,&offsets));assert(TIFFGetField(t,TIFFTAG_TILEBYTECOUNTS,&offsets));assert(!TIFFGetField(t,TIFFTAG_STRIPBYTECOUNTS,&offsets));assert(!TIFFGetField(t,TIFFTAG_STRIPOFFSETS,&offsets));
+ t=TIFFOpen(planar,"rc");assert(t);assert(TIFFRasterScanlineSize64(t)==17*3*2);assert(TIFFReadEncodedTile(t,0,NULL,0)==0);assert(!TIFFCheckTile(t,0,0,0,3));assert(TIFFCheckTile(t,0,0,0,1));assert(TIFFComputeTile(t,0,0,0,1)==4);assert(TIFFReadTile(t,b,0,0,0,1)==16*16*2);uint64_t*offsets,*same;assert(TIFFGetField(t,TIFFTAG_TILEOFFSETS,&offsets)&&TIFFGetField(t,TIFFTAG_STRIPOFFSETS,&same)&&same==offsets);assert(TIFFGetField(t,TIFFTAG_TILEBYTECOUNTS,&offsets)&&TIFFGetField(t,TIFFTAG_STRIPBYTECOUNTS,&same)&&same==offsets);
  TIFFClose(t);
  t=TIFFOpen("tests/fixtures/acceptance-planar.tif","rc");assert(t);assert(TIFFComputeStrip(t,0,3)==UINT32_MAX);assert(TIFFComputeStrip(t,0,1)!=UINT32_MAX);TIFFClose(t);
 }

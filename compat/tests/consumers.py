@@ -245,6 +245,42 @@ class Consumers(unittest.TestCase):
    p.write_bytes(assemble([edit(edit(tags,279,None),325,None)])[0])
    for exe in ['dump','dump-libtiff']:
     self.assertEqual(subprocess.run([str(OUT/exe),str(p),'counts',str(self.path/'out')],capture_output=True).returncode,3)
+ def test_strile_aliases(self):
+  # libtiff reads StripOffsets and TileOffsets as one field, and the two byte
+  # counts as another: either tag holds either layout's values, and the later
+  # entry of a pair replaces the earlier unread. The tile dimensions make an
+  # image tiled.
+  def rename(tags,old,new):return [(new if k==old else k,ty,v) for k,ty,v in tags]
+  def swap(blob,a,b):
+   # Exchange two entries of the first classic directory.
+   out=bytearray(blob);at=struct.unpack_from('<I',out,4)[0]+2
+   i,j=[next(i for i in range(struct.unpack_from('<H',out,at-2)[0]) if struct.unpack_from('<H',out,at+12*i)[0]==k) for k in (a,b)]
+   out[at+12*i:at+12*i+12],out[at+12*j:at+12*j+12]=out[at+12*j:at+12*j+12],out[at+12*i:at+12*i+12]
+   return bytes(out)
+  def fails(blob,readers=('dump','dump-libtiff')):
+   p=self.path/'in.tif';p.write_bytes(blob)
+   for exe in readers:
+    self.assertEqual(subprocess.run([str(OUT/exe),str(p),'striles',str(self.path/'out')],capture_output=True).returncode,3)
+  other={273:324,324:273,279:325,325:279}
+  for tiled in [False,True]:
+   _,native,_,tags,*_=scene(w=17,h=19,tiled=tiled)
+   o,c=(324,325) if tiled else (273,279)
+   for ko,kc in itertools.product([o,other[o]],[c,other[c]]):
+    with self.subTest(tiled=tiled,offsets=ko,counts=kc):
+     blob=assemble([rename(rename(tags,o,ko),c,kc)])[0]
+     self.dump(blob,'striles');self.dump(blob,expected=native)
+   # Values under the tile tags and junk under the strip tags: sorted, the
+   # junk comes first and is ignored; moved after, it fails both readers.
+   for key,junk in [(o,273),(c,279)]:
+    with self.subTest(tiled=tiled,junk=junk):
+     blob=assemble([rename(tags,key,other[junk])+[(junk,2,b'junk')]])[0]
+     self.dump(blob,'striles');self.dump(blob,expected=native)
+     fails(swap(blob,junk,other[junk]))
+  # TIFF 6.0 requires both tile dimensions. When RowsPerStrip comes first,
+  # libtiff takes a missing TileWidth from ImageWidth and a missing
+  # TileLength from RowsPerStrip; the shim rejects the image.
+  for key in [322,323]:
+   with self.subTest(dimension=key):fails(assemble([scene(w=17,h=19)[3]+[(key,4,[16])]])[0],['dump'])
  def test_extra_samples_and_alpha(self):
   # libtiff counts samples beyond the photometric's color channels as
   # unspecified extra samples and rejects ExtraSamples it cannot set. Its RGBA

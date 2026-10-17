@@ -72,11 +72,10 @@ acceptance proofs. Preserve the missing-EOL and duplicate-endpoint policies in
    specification, not an implicit addition to a compression tag. Do not
    import unsafe codec implementations under a "verified"
    claim.
-5. **Close the C API gaps the differential target still reports.** Strip and
-   tile offset tags are not aliased, and TileOffsets rather than the tile
-   dimensions decide whether an image is tiled. The derived Matteing/DataType
-   tags are missing. Before `JPEGCOLORMODE_RGB`, JPEG and OJPEG YCbCr sizes
-   are for upsampled RGB, where libtiff reports native subsampled sizes.
+5. **Close the C API gaps the differential target still reports.** The
+   derived Matteing/DataType tags are missing. Before `JPEGCOLORMODE_RGB`,
+   JPEG and OJPEG YCbCr sizes are for upsampled RGB, where libtiff reports
+   native subsampled sizes.
    libtiff's OJPEG codec also rewrites YCbCrSubsampling and
    JPEGInterchangeFormat from the stream and assumes YCbCr for a missing or
    RGB photometric; the shim reads the tags as stored. Predictor reads back on

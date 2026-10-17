@@ -9,7 +9,7 @@ impl Handle{
         let sc=|key,d|scalar(&self.data,&self.meta.tags,key,d,le);
         let width=sc(256,0)?;let height=sc(257,0)?;let ch=sc(277,1)?;let planar=sc(284,1)?;
         if width==0||height==0||width>u32::MAX as u64||height>u32::MAX as u64||ch==0||ch>64||!matches!(planar,1|2){return Err((INVALID,"invalid temporary image geometry"));}
-        let tiled=find(&self.meta.tags,322).is_some();
+        let tiled=find(&self.meta.tags,322).is_some()||find(&self.meta.tags,323).is_some();
         let bw=if tiled{sc(322,0)?}else{width};let bh=if tiled{sc(323,0)?}else{sc(278,height)?.min(height)};
         if bw==0||bh==0||bw>u32::MAX as u64||bh>u32::MAX as u64{return Err((INVALID,"invalid temporary block geometry"));}
         let count=product(product(((width-1)/bw+1) as usize,((height-1)/bh+1) as usize)?,if planar==2{ch as usize}else{1})?;

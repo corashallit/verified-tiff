@@ -6,6 +6,12 @@ use verified_tiff::{container as ct,native_samples::read_word};
 
 pub fn u32at(s:&[u8],p:usize,le:bool)->R<u32>{read32(s,p,le).map_err(err)}
 pub fn find(tags:&[Tag],key:u16)->Option<Tag>{tags.iter().find(|t|t.key==key).copied()}
+/// The tag holding the strile offsets, or the byte counts: the one of the
+/// strip and tile pair that is set, and when both are, the one the layout uses.
+pub fn strile_key(tags:&[Tag],tiled:bool,counts:bool)->u16{
+    let (strip,tile)=if counts{(279,325)}else{(273,324)};
+    match (find(tags,strip).is_some(),find(tags,tile).is_some()){(true,false)=>strip,(false,true)=>tile,_=>if tiled{tile}else{strip}}
+}
 pub fn value<S:Values+?Sized>(s:&S,t:Tag,i:usize,le:bool)->R<u64>{
     let s=s.bytes(&t);
     if t.remote.is_some(){return Err((INVALID,"deferred field requires strile accessor"));}
@@ -93,7 +99,14 @@ pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer
 }
 pub fn metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,chop:bool,deferred:bool)->R<(Buf<u8>,Meta)>{
     let mem=source.mem.clone();let le=header.little_endian;
-    let (data,tags,next,space)=raw_metadata(source,header,off,l,true)?;
+    let (data,mut tags,next,space)=raw_metadata(source,header,off,l,true)?;
+    // Like libtiff, StripOffsets and TileOffsets are one field, as are the two
+    // byte counts, and the later entry of a pair replaces the earlier
+    // unread (tif_dirread.c, TIFFReadDirectory).
+    for (strip,tile) in [(273,324),(279,325)]{
+        let at=|k|tags.iter().position(|t:&Tag|t.key==k);
+        if let (Some(a),Some(b))=(at(strip),at(tile)){let gone=if a<b{strip}else{tile};tags.retain(|t|t.key!=gone);}
+    }
     assemble(data,tags,off,next,le,l,chop,&mem,true,Some((source,space,deferred)))
 }
 /// Image-directory policy: validate the exact InkNames payload, never its
@@ -167,13 +180,14 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
     let orientation=sc(274,1)? as usize;let fill=u16::try_from(sc(266,1)?).map_err(|_|(INVALID,"FillOrder overflow"))?;
     if width==0 || height==0 || width>u32::MAX as usize || height>u32::MAX as usize || ch==0 || ch>64 || bits==0 || bits>128 || (bits>64 && !matches!(format,5|6)) || !(1..=2).contains(&planar) || !(1..=8).contains(&orientation) || !(1..=2).contains(&fill){return Err((INVALID,"invalid image geometry/sample layout"));}
     for key in [258,339]{if let Some(t)=find(&tags,key){if t.count!=1 && t.count!=ch{return Err((INVALID,"per-sample metadata count"));}for i in 1..t.count{if value(&data,t,i,le)?!=value(&data,t,0,le)?{return Err((NOTIMPL,"mixed sample widths/formats"));}}}}
-    let tiled=find(&tags,324).is_some();let rows=sc(278,u32::MAX as u64)? as usize;
+    // Like libtiff, the tile dimensions make an image tiled.
+    let tiled=find(&tags,322).is_some()||find(&tags,323).is_some();let rows=sc(278,u32::MAX as u64)? as usize;
     let bw=if tiled{sc(322,0)? as usize}else{width};let bh=if tiled{sc(323,0)? as usize}else{rows.min(height)};
     // libtiff rejects a RowsPerStrip of 0 even on tiled images.
     if rows==0 || bw==0 || bh==0 || bw>u32::MAX as usize || bh>u32::MAX as usize{return Err((INVALID,"invalid strip/tile geometry"));}
     let (_,_,_,count)=geometry::grid(width,height,bw,bh,if planar==2{ch}else{1},l.max_segments).map_err(err)?;
-    let offsets=Striles::new(&data,&tags,if tiled{324}else{273},le,l.max_segments,mem)?;
-    let counts=Striles::new(&data,&tags,if tiled{325}else{279},le,l.max_segments,mem)?;
+    let offsets=Striles::new(&data,&tags,strile_key(&tags,tiled,false),le,l.max_segments,mem)?;
+    let counts=Striles::new(&data,&tags,strile_key(&tags,tiled,true),le,l.max_segments,mem)?;
     // Pixel ranges and streams are deliberately checked only when requested.
     let map=small_array(&data,&tags,320,le,3*65536,&mem)?;
     let subifds=array(&data,&tags,330,le,l.max_directories,&mem)?;
@@ -187,7 +201,7 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
     let mut m=Meta{tags,off,next,le,width,height,ch,bits,format,photo,planar,rows,bw,bh,tiled,tile_rows:rows,rows_set,offsets,counts,map,extra,subifds,compression,predictor,orientation,fill};
     if let Some((source,space,deferred))=repair{
         if let Some(v)=m.estimated_counts(&data,source,space,deferred,count)?{
-            let key=if tiled{325}else{279};set_ints(&mut data,&mut m.tags,key,16,&v,le,l)?;
+            let key=strile_key(&m.tags,tiled,true);set_ints(&mut data,&mut m.tags,key,16,&v,le,l)?;
             m.counts=Striles::new(&data,&m.tags,key,le,l.max_segments,mem)?;
             // libtiff then assumes one strip without RowsPerStrip.
             if !m.rows_set{m.rows=height;}
@@ -235,7 +249,7 @@ impl Meta{
     fn estimated_counts(&mut self,data:&[u8],source:&mut Source,space:Option<u64>,deferred:bool,count:usize)->R<Option<Buf<u64>>>{
         if self.compression==6||self.offsets.len()!=count{return Ok(None);}
         let file=source.len;let none=self.compression==1;
-        if find(&self.tags,if self.tiled{325}else{279}).is_none(){
+        if find(&self.tags,strile_key(&self.tags,self.tiled,true)).is_none(){
             if (self.planar==1&&count>1)||(self.planar==2&&count!=self.ch){return Err((INVALID,"missing StripByteCounts"));}
         }else if self.counts.len()!=count{return Ok(None);
         }else if count==1&&!self.tiled{

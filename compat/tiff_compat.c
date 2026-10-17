@@ -560,8 +560,6 @@ static int getfield(TIFF *t, uint32_t tag, va_list ap, int def) {
   case TIFFTAG_STRIPBYTECOUNTS:
   case TIFFTAG_TILEOFFSETS:
   case TIFFTAG_TILEBYTECOUNTS: {
-    if (((tag == 324 || tag == 325) != TIFFIsTiled(t)))
-      return 0;
     size_t n = 0;
     const void *p = vt_array(t->state, tag, &n);
     if (!n)
