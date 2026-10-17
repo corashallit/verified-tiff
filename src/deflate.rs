@@ -126,6 +126,25 @@ impl Cursor {
             r.is_ok() ==> final(self).history@.len()==final(self).produced,
     {
         if self.produced==cap {return Err(Error::Invalid);}
+        self.push(byte,cap);Ok(())
+    }
+    // Append one byte when the caller has already established output space.
+    #[inline(always)]
+    pub(super) fn push(&mut self,byte:u8,cap:usize)
+        requires old(self).produced==old(self).history@.len(),old(self).produced<cap,
+            old(self).a%65521==adler1(old(self).history@),old(self).b%65521==adler2(old(self).history@),
+            old(self).pending<=256,old(self).a<=65520+old(self).pending*255,old(self).b<=65520+old(self).pending*130800,
+            forall|k:int| 0<=k<old(self).produced && old(self).produced as int-32768<=k ==> old(self).ring@[k%32768]==old(self).history@[k],
+        ensures final(self).produced==old(self).produced+1 && final(self).produced<=cap,
+            final(self).model()==append(old(self).model(),byte),
+            final(self).a%65521==adler1(final(self).history@) && final(self).b%65521==adler2(final(self).history@)
+                && final(self).pending<=256 && final(self).a<=65520+final(self).pending*255 && final(self).b<=65520+final(self).pending*130800,
+            forall|k:int| 0<=k<final(self).produced && final(self).produced as int-32768<=k ==> final(self).ring@[k%32768]==final(self).history@[k],
+            final(self).bits==old(self).bits,final(self).lit==old(self).lit,final(self).dist==old(self).dist,
+            final(self).history@.len()==final(self).produced,
+            final(self).mode==old(self).mode,final(self).left==old(self).left,final(self).distance==old(self).distance,
+            final(self).last==old(self).last,final(self).window==old(self).window,
+    {
         let at=self.produced%32768;
         self.ring[at]=byte;
         // Accumulate bounded chunks; reduction is needed only every 256 bytes.
@@ -161,9 +180,136 @@ impl Cursor {
                 }
             }
         }
-        Ok(())
     }
     pub(super) fn done(&self) -> (r:bool) ensures r==(self.model().mode==5) {self.mode==5}
+    // Append bytes that fit before the ring wraps: one slice copy, then the
+    // checksum folds them in order, reducing every 256 bytes.
+    #[inline(always)]
+    pub(super) fn append_block(&mut self,b:&[u8],cap:usize)
+        requires old(self).produced==old(self).history@.len(),old(self).produced+b.len()<=cap,0<b.len(),
+            old(self).produced%32768+b.len()<=32768,
+            old(self).a%65521==adler1(old(self).history@),old(self).b%65521==adler2(old(self).history@),
+            old(self).pending<=256,old(self).a<=65520+old(self).pending*255,old(self).b<=65520+old(self).pending*130800,
+            forall|k:int| 0<=k<old(self).produced && old(self).produced as int-32768<=k ==> old(self).ring@[k%32768]==old(self).history@[k],
+        ensures final(self).produced==old(self).produced+b.len(),final(self).history@==old(self).history@+b@,
+            final(self).a%65521==adler1(final(self).history@) && final(self).b%65521==adler2(final(self).history@)
+                && final(self).pending<=256 && final(self).a<=65520+final(self).pending*255 && final(self).b<=65520+final(self).pending*130800,
+            forall|k:int| 0<=k<final(self).produced && final(self).produced as int-32768<=k ==> final(self).ring@[k%32768]==final(self).history@[k],
+            final(self).bits==old(self).bits,final(self).lit==old(self).lit,final(self).dist==old(self).dist,
+            final(self).mode==old(self).mode,final(self).left==old(self).left,final(self).distance==old(self).distance,
+            final(self).last==old(self).last,final(self).window==old(self).window,
+    {
+        let n=b.len();let ghost h=self.history@;let ghost p=self.produced as int;
+        let d0=self.produced%32768;let ghost old_ring=self.ring@;
+        {
+            let ring:&mut [u8]=&mut self.ring;
+            let (_,tail)=ring.split_at_mut(d0);let (target,_)=tail.split_at_mut(n);
+            target.copy_from_slice(b);
+        }
+        assert(forall|k:int| 0<=k<n ==> #[trigger] self.ring@[d0+k]==b@[k]);
+        assert(forall|k:int| 0<=k<32768 && !(d0<=k<d0+n) ==> #[trigger] self.ring@[k]==old_ring[k]);
+        let mut a=self.a;let mut sum=self.b;let mut pending=self.pending;let mut i=0usize;
+        while i<n
+            invariant i<=n,n==b.len(),
+                a%65521==adler1(h+b@.subrange(0,i as int)),sum%65521==adler2(h+b@.subrange(0,i as int)),
+                pending<=256,a<=65520+pending*255,sum<=65520+pending*130800,
+            decreases n-i,
+        {
+            if pending==256 {a=a%65521;sum=sum%65521;pending=0;}
+            // Each chunk ends before the next reduction is due.
+            let m=if n-i<256-pending {n-i} else {256-pending};
+            let start=i;let stop=i+m;
+            while i<stop
+                invariant start<=i<=stop<=n,n==b.len(),pending+(stop-start)<=256,
+                    a%65521==adler1(h+b@.subrange(0,i as int)),sum%65521==adler2(h+b@.subrange(0,i as int)),
+                    a<=65520+(pending+(i-start))*255,sum<=65520+(pending+(i-start))*130800,
+                decreases stop-i,
+            {
+                let byte=b[i];
+                let ghost prior_a=a;let ghost prior_b=sum;
+                a=a+byte as usize;sum=sum+a;
+                proof {
+                    assert(a%65521==(prior_a%65521+byte as int)%65521);
+                    assert(sum%65521==(prior_b%65521+a%65521)%65521);
+                    let q=h+b@.subrange(0,i as int);let r=h+b@.subrange(0,i as int+1);
+                    assert(r.drop_last() =~= q);assert(r.last()==byte);
+                    reveal_with_fuel(adler1,2);reveal_with_fuel(adler2,2);
+                }
+                i=i+1;
+            }
+            pending=pending+m;
+        }
+        assert(b@.subrange(0,n as int) =~= b@);
+        self.a=a;self.b=sum;self.pending=pending;self.produced=self.produced+n;
+        proof {self.history=Ghost(h+b@);}
+        assert forall|k:int| 0<=k<self.produced && self.produced as int-32768<=k implies self.ring@[k%32768]==self.history@[k] by {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(p,32768);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(k,32768);
+            if k>=p {
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(k,32768,p/32768,d0+(k-p));
+                assert(self.ring@[d0+(k-p)]==b@[k-p]);
+            } else {
+                assert(!(d0<=k%32768<d0+n)) by(nonlinear_arith)
+                    requires p==p/32768*32768+d0,k==k/32768*32768+k%32768,0<=d0<32768,0<=k%32768<32768,
+                        p-32768+n<=k<p,d0+n<=32768,n>0;
+                assert(old_ring[k%32768]==h[k]);
+            }
+        }
+    }
+    // Stored bytes that fit before the ring wraps: copy the source slice, then
+    // append it.
+    #[inline(always)]
+    pub(super) fn stored_block(&mut self,s:&[u8],cap:usize,dst:&mut [u8])
+        requires old(self).valid(s@,cap as int),old(self).mode==1,0<old(dst).len()<=old(self).left,old(self).bits.bit==0,
+            old(self).bits.at+old(dst).len()<=old(self).bits.end,old(self).produced+old(dst).len()<=cap,
+            old(self).produced%32768+old(dst).len()<=32768,
+        ensures final(self).valid(s@,cap as int),final(self).end()==old(self).end(),final(dst).len()==old(dst).len(),
+            taken(s@,old(self).end(),old(self).model(),final(dst)@),final(self).model()==stored_model(old(self).model(),final(dst)@),
+            final(self).produced==old(self).produced+old(dst).len(),final(self).mode==1,final(self).bits.bit==0,
+            final(self).bits.at==old(self).bits.at+old(dst).len(),final(self).bits.end==old(self).bits.end,
+    {
+        let n=dst.len();let ghost at=self.bits.at as int;
+        {
+            let (_,tail)=s.split_at(self.bits.at);let (source,_)=tail.split_at(n);
+            dst.copy_from_slice(source);
+        }
+        assert forall|k:int| 0<=k<n implies #[trigger] dst@[k]==field(s@,at*8+8*k,8) as u8 by {
+            aligned_byte(s@,at+k);assert(at*8+8*k==(at+k)*8);
+        }
+        let ghost b=dst@;
+        self.append_block(dst,cap);
+        self.left=self.left-n;self.bits.at=self.bits.at+n;
+        assert(self.model()==stored_model(old(self).model(),b));
+    }
+    // A whole match whose source precedes it and neither range wraps the ring:
+    // copy the source slice, then append it.
+    #[inline(always)]
+    pub(super) fn match_block(&mut self,s:&[u8],cap:usize,dst:&mut [u8])
+        requires old(self).valid(s@,cap as int),old(self).mode==3,0<old(dst).len()<=old(self).left,
+            old(dst).len()<=old(self).distance,0<old(self).distance<=old(self).produced,old(self).distance<=old(self).window,
+            old(self).left<=cap-old(self).produced,
+            (old(self).produced-old(self).distance)%32768+old(dst).len()<=32768,old(self).produced%32768+old(dst).len()<=32768,
+        ensures final(self).valid(s@,cap as int),final(self).end()==old(self).end(),final(dst).len()==old(dst).len(),
+            copied(old(self).model(),final(dst)@),final(self).model()==copy_model(old(self).model(),final(dst)@),
+            final(self).produced==old(self).produced+old(dst).len(),final(self).bits==old(self).bits,
+    {
+        let n=dst.len();let ghost h=self.history@;let ghost p=self.produced as int;let ghost d=self.distance as int;
+        let src0=(self.produced-self.distance)%32768;
+        {
+            let ring:&[u8]=&self.ring;
+            let (_,tail)=ring.split_at(src0);let (source,_)=tail.split_at(n);
+            dst.copy_from_slice(source);
+        }
+        assert forall|k:int| 0<=k<n implies #[trigger] dst@[k]==h[p-d+k] by {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(p-d,32768);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(p-d+k,32768,(p-d)/32768,src0+k);
+            assert(self.ring@[(p-d+k)%32768]==h[p-d+k]);
+        }
+        let ghost b=dst@;
+        self.append_block(dst,cap);
+        self.left=self.left-n;
+        assert(self.model()==copy_model(old(self).model(),b));
+    }
     #[inline(always)]
     pub(super) fn match_byte(&mut self,s:&[u8],cap:usize) -> (byte:u8)
         requires old(self).valid(s@,cap as int),old(self).mode==3,old(self).left>0,
@@ -178,7 +324,25 @@ impl Cursor {
         let byte=self.ring[(self.produced-self.distance)%32768];
         assert(byte==self.history@[self.produced as int-self.distance]);
         self.left=self.left-1;
-        let r=self.emit(byte,cap);assert(r.is_ok());byte
+        self.push(byte,cap);byte
+    }
+    #[inline(always)]
+    pub(super) fn stored_byte(&mut self,s:&[u8],src:&[u8],i:usize,cap:usize) -> (byte:u8)
+        requires old(self).valid(s@,cap as int),old(self).mode==1,old(self).left>0,old(self).bits.bit==0,
+            old(self).bits.at<old(self).bits.end,old(self).produced<cap,
+            i<src.len(),src@[i as int]==s@[old(self).bits.at as int],
+        ensures final(self).valid(s@,cap as int),final(self).end()==old(self).end(),
+            Some(final(self).model())==transition(s@,old(self).end(),cap as int,old(self).model()),
+            final(self).produced==old(self).produced+1,final(self).history@==old(self).history@.push(byte),
+            final(self).mode==1,final(self).left+1==old(self).left,
+            final(self).bits.at==old(self).bits.at+1,final(self).bits.bit==0,final(self).bits.end==old(self).bits.end,
+    {
+        reveal(transition);
+        proof {aligned_byte(s@,self.bits.at as int);}
+        // Runs pass the block's own subslice, so the read needs no bounds check
+        // and the cursor fields stay in registers across the loop.
+        let byte=src[i];self.bits.at=self.bits.at+1;self.left=self.left-1;
+        self.push(byte,cap);byte
     }
     #[inline(always)]
     pub(super) fn step(&mut self,s:&[u8],cap:usize) -> (r:Result<Option<u8>,Error>)
@@ -325,6 +489,157 @@ pub(super) proof fn finish_prefix(s:Seq<u8>,end:int,cap:int,v:Model,fuel:nat)
     }
 }
 
+// A match whose bytes all precede it in history, taken as consecutive copy
+// transitions at one input position.
+pub(super) open spec fn copied(v:Model,b:Seq<u8>) -> bool {
+    &&& v.mode==3 && b.len()<=v.left && b.len()<=v.distance && 0<v.distance<=v.bytes.len() && v.distance<=v.window
+    &&& forall|k:int| 0<=k<b.len() ==> #[trigger] b[k]==v.bytes[v.bytes.len()-v.distance+k]
+}
+pub(super) open spec fn copy_model(v:Model,b:Seq<u8>) -> Model {Model {left:(v.left-b.len()) as usize,bytes:v.bytes+b,..v}}
+pub(super) proof fn copy_step(s:Seq<u8>,end:int,cap:int,v:Model,b:Seq<u8>)
+    requires copied(v,b),b.len()>0,v.bytes.len()+b.len()<=cap,
+    ensures transition(s,end,cap,v)==Some(append(Model {left:(v.left-1) as usize,..v},b[0])),
+        copied(append(Model {left:(v.left-1) as usize,..v},b[0]),b.subrange(1,b.len() as int)),
+        copy_model(append(Model {left:(v.left-1) as usize,..v},b[0]),b.subrange(1,b.len() as int))==copy_model(v,b),
+{
+    reveal(transition);
+    let w=append(Model {left:(v.left-1) as usize,..v},b[0]);let t=b.subrange(1,b.len() as int);
+    assert(b[0]==v.bytes[v.bytes.len()-v.distance]);
+    assert forall|k:int| 0<=k<t.len() implies #[trigger] t[k]==w.bytes[w.bytes.len()-w.distance+k] by {
+        assert(t[k]==b[k+1]);assert(w.bytes[w.bytes.len()-w.distance+k]==v.bytes[v.bytes.len()-v.distance+k+1]);
+    }
+    assert(w.bytes+t =~= v.bytes+b);
+}
+pub(super) proof fn copy_finish(s:Seq<u8>,end:int,cap:int,v:Model,b:Seq<u8>,fuel:nat)
+    requires copied(v,b),v.bytes.len()+b.len()<=cap,b.len()<=fuel,
+    ensures finish(s,end,cap,v,fuel)==finish(s,end,cap,copy_model(v,b),(fuel-b.len()) as nat),
+    decreases b.len(),
+{
+    if b.len()==0 {assert(v.bytes+b =~= v.bytes);assert(copy_model(v,b)==v);}
+    else {
+        copy_step(s,end,cap,v,b);reveal_with_fuel(finish,1);
+        copy_finish(s,end,cap,append(Model {left:(v.left-1) as usize,..v},b[0]),b.subrange(1,b.len() as int),(fuel-1) as nat);
+    }
+}
+
+// Byte-aligned stored bytes, taken as consecutive stored transitions.
+pub(super) open spec fn taken(s:Seq<u8>,end:int,v:Model,b:Seq<u8>) -> bool {
+    &&& v.mode==1 && b.len()<=v.left && v.pos%8==0 && v.pos+8*b.len()<=end*8
+    &&& forall|k:int| 0<=k<b.len() ==> #[trigger] b[k]==field(s,v.pos+8*k,8) as u8
+}
+pub(super) open spec fn stored_model(v:Model,b:Seq<u8>) -> Model {Model {pos:v.pos+8*b.len(),left:(v.left-b.len()) as usize,bytes:v.bytes+b,..v}}
+pub(super) proof fn stored_step(s:Seq<u8>,end:int,cap:int,v:Model,b:Seq<u8>)
+    requires taken(s,end,v,b),b.len()>0,v.bytes.len()+b.len()<=cap,
+    ensures transition(s,end,cap,v)==Some(append(Model {pos:v.pos+8,left:(v.left-1) as usize,..v},b[0])),
+        taken(s,end,append(Model {pos:v.pos+8,left:(v.left-1) as usize,..v},b[0]),b.subrange(1,b.len() as int)),
+        stored_model(append(Model {pos:v.pos+8,left:(v.left-1) as usize,..v},b[0]),b.subrange(1,b.len() as int))==stored_model(v,b),
+{
+    reveal(transition);
+    let w=append(Model {pos:v.pos+8,left:(v.left-1) as usize,..v},b[0]);let t=b.subrange(1,b.len() as int);
+    assert(b[0]==field(s,v.pos+8*0,8) as u8);
+    assert forall|k:int| 0<=k<t.len() implies #[trigger] t[k]==field(s,w.pos+8*k,8) as u8 by {
+        assert(t[k]==b[k+1]);assert(w.pos+8*k==v.pos+8*(k+1));
+    }
+    assert(w.bytes+t =~= v.bytes+b);
+}
+pub(super) proof fn stored_finish(s:Seq<u8>,end:int,cap:int,v:Model,b:Seq<u8>,fuel:nat)
+    requires taken(s,end,v,b),v.bytes.len()+b.len()<=cap,b.len()<=fuel,
+    ensures finish(s,end,cap,v,fuel)==finish(s,end,cap,stored_model(v,b),(fuel-b.len()) as nat),
+    decreases b.len(),
+{
+    if b.len()==0 {assert(v.bytes+b =~= v.bytes);assert(stored_model(v,b)==v);}
+    else {
+        stored_step(s,end,cap,v,b);reveal_with_fuel(finish,1);
+        stored_finish(s,end,cap,append(Model {pos:v.pos+8,left:(v.left-1) as usize,..v},b[0]),b.subrange(1,b.len() as int),(fuel-1) as nat);
+    }
+}
+
+// Copy transitions of one match, refined against the unbounded model. The
+// loop has no early exit, so cursor fields stay in registers until it ends.
+#[inline(always)]
+fn copy_into(c:&mut Cursor,s:&[u8],cap:usize,dst:&mut [u8],fuel:Ghost<nat>)
+    requires old(c).valid(s@,cap as int),old(c).mode==3,0<old(dst).len()<=old(c).left,
+        0<old(c).distance<=old(c).produced,old(c).distance<=old(c).window,old(c).left<=cap-old(c).produced,
+        old(dst).len()<=fuel@,
+    ensures final(c).valid(s@,cap as int),final(c).end()==old(c).end(),
+        final(dst).len()==old(dst).len(),final(c).produced==old(c).produced+old(dst).len(),
+        forall|k:int| 0<=k<old(c).produced ==> final(c).history@[k]==old(c).history@[k],
+        forall|k:int| 0<=k<old(dst).len() ==> final(dst)@[k]==final(c).history@[old(c).produced+k],
+        finish(s@,old(c).end(),cap as int,old(c).model(),fuel@)
+            ==finish(s@,old(c).end(),cap as int,final(c).model(),(fuel@-old(dst).len()) as nat),
+{
+    let n=dst.len();let mut i=0usize;let ghost start=c.produced;let ghost history=c.history@;
+    let ghost wanted=finish(s@,c.end(),cap as int,c.model(),fuel@);
+    if n>=32 && n<=c.distance && (c.produced-c.distance)%32768+n<=32768 && c.produced%32768+n<=32768 {
+        let ghost v=c.model();
+        c.match_block(s,cap,dst);
+        proof {copy_finish(s@,c.end(),cap as int,v,dst@,fuel@);}
+        return;
+    }
+    while i<n
+        invariant i<=n,n==dst.len(),n<=old(c).left,c.mode==3,c.left+i==old(c).left,
+            c.distance==old(c).distance,c.window==old(c).window,c.produced==start+i,start==old(c).produced,
+            0<c.distance<=c.produced,c.distance<=c.window,old(c).left<=cap-start,
+            c.valid(s@,cap as int),c.end()==old(c).end(),n<=fuel@,
+            forall|k:int| 0<=k<start ==> c.history@[k]==history[k],
+            forall|k:int| 0<=k<i ==> dst@[k]==c.history@[start+k],
+            wanted==finish(s@,c.end(),cap as int,c.model(),(fuel@-i) as nat),
+        decreases n-i,
+    {
+        reveal_with_fuel(finish,1);
+        let ghost previous=c.history@;
+        let byte=c.match_byte(s,cap);
+        dst[i]=byte;i=i+1;
+        assert forall|k:int| 0<=k<i implies dst@[k]==c.history@[start+k] by {
+            if k==i-1 {assert(c.history@[start+k]==byte);} else {assert(c.history@[start+k]==previous[start+k]);}
+        }
+        assert forall|k:int| 0<=k<start implies c.history@[k]==history[k] by {assert(c.history@[k]==previous[k]);}
+    }
+}
+
+// Stored-block bytes, likewise refined transition by transition.
+#[inline(always)]
+fn stored_into(c:&mut Cursor,s:&[u8],cap:usize,dst:&mut [u8],fuel:Ghost<nat>)
+    requires old(c).valid(s@,cap as int),old(c).mode==1,0<old(dst).len()<=old(c).left,old(c).bits.bit==0,
+        old(c).bits.at+old(dst).len()<=old(c).bits.end,old(c).produced+old(dst).len()<=cap,old(dst).len()<=fuel@,
+    ensures final(c).valid(s@,cap as int),final(c).end()==old(c).end(),
+        final(dst).len()==old(dst).len(),final(c).produced==old(c).produced+old(dst).len(),
+        forall|k:int| 0<=k<old(c).produced ==> final(c).history@[k]==old(c).history@[k],
+        forall|k:int| 0<=k<old(dst).len() ==> final(dst)@[k]==final(c).history@[old(c).produced+k],
+        finish(s@,old(c).end(),cap as int,old(c).model(),fuel@)
+            ==finish(s@,old(c).end(),cap as int,final(c).model(),(fuel@-old(dst).len()) as nat),
+{
+    let n=dst.len();let mut i=0usize;let ghost start=c.produced;let ghost history=c.history@;
+    let ghost wanted=finish(s@,c.end(),cap as int,c.model(),fuel@);
+    if n>=32 && c.produced%32768+n<=32768 {
+        let ghost v=c.model();
+        c.stored_block(s,cap,dst);
+        proof {stored_finish(s@,c.end(),cap as int,v,dst@,fuel@);}
+        return;
+    }
+    let (_,tail)=s.split_at(c.bits.at);let (src,_)=tail.split_at(n);
+    while i<n
+        invariant i<=n,n==dst.len(),n<=old(c).left,c.mode==1,c.left+i==old(c).left,
+            src.len()==n,forall|k:int| 0<=k<n ==> #[trigger] src@[k]==s@[old(c).bits.at+k],
+            c.bits.bit==0,c.bits.at==old(c).bits.at+i,c.bits.end==old(c).bits.end,old(c).bits.at+n<=old(c).bits.end,
+            c.produced==start+i,start==old(c).produced,start+n<=cap,
+            c.valid(s@,cap as int),c.end()==old(c).end(),n<=fuel@,
+            forall|k:int| 0<=k<start ==> c.history@[k]==history[k],
+            forall|k:int| 0<=k<i ==> dst@[k]==c.history@[start+k],
+            wanted==finish(s@,c.end(),cap as int,c.model(),(fuel@-i) as nat),
+        decreases n-i,
+    {
+        reveal_with_fuel(finish,1);
+        let ghost previous=c.history@;
+        let byte=c.stored_byte(s,src,i,cap);
+        dst[i]=byte;i=i+1;
+        assert forall|k:int| 0<=k<i implies dst@[k]==c.history@[start+k] by {
+            if k==i-1 {assert(c.history@[start+k]==byte);} else {assert(c.history@[start+k]==previous[start+k]);}
+        }
+        assert forall|k:int| 0<=k<start implies c.history@[k]==history[k] by {assert(c.history@[k]==previous[k]);}
+    }
+}
+
 pub(super) fn validate(s:&[u8],start:usize,count:usize,cap:usize,fuel:usize) -> (r:Result<usize,Error>)
     ensures r.is_ok()==result(s@,start as int,count as int,cap as int,fuel as nat).is_some(),
         r.is_ok() ==> r.unwrap()==result(s@,start as int,count as int,cap as int,fuel as nat).unwrap().len(),
@@ -356,6 +671,37 @@ pub(super) fn process(s:&[u8],start:usize,count:usize,cap:usize,fuel:usize,outpu
             forall|k:int| write<=k<output.len() ==> output@[k]==old(output)@[k],
         decreases left,
     {
+        if c.mode==3 && c.left>0 && c.distance>0 && c.distance<=c.produced && c.distance<=c.window && c.left<=cap-c.produced
+            && c.produced<=write && c.left.min(left)<=write-c.produced {
+            // A match lying inside the visible output is copied as one run.
+            let n=c.left.min(left);let at=c.produced;
+            let ghost prior=c.history@;let ghost before=output@;let ghost prior_left=left;
+            {
+                let (_,tail)=output.split_at_mut(at);
+                let (dst,_)=tail.split_at_mut(n);
+                copy_into(&mut c,s,cap,dst,Ghost(prior_left as nat));
+            }
+            left=left-n;
+            assert forall|k:int| 0<=k<write && k<c.produced implies output@[k]==c.history@[k] by {
+                if k<at {assert(output@[k]==before[k]);assert(c.history@[k]==prior[k]);}
+            }
+            continue;
+        }
+        if c.mode==1 && c.left>0 && c.bits.bit==0 && c.bits.at<c.bits.end && c.produced<cap && c.produced<write {
+            // Stored bytes inside the visible output are copied as one run.
+            let n=c.left.min(left).min(c.bits.end-c.bits.at).min(cap-c.produced).min(write-c.produced).min(32768-c.produced%32768);let at=c.produced;
+            let ghost prior=c.history@;let ghost before=output@;let ghost prior_left=left;
+            {
+                let (_,tail)=output.split_at_mut(at);
+                let (dst,_)=tail.split_at_mut(n);
+                stored_into(&mut c,s,cap,dst,Ghost(prior_left as nat));
+            }
+            left=left-n;
+            assert forall|k:int| 0<=k<write && k<c.produced implies output@[k]==c.history@[k] by {
+                if k<at {assert(output@[k]==before[k]);assert(c.history@[k]==prior[k]);}
+            }
+            continue;
+        }
         reveal_with_fuel(finish,1);
         let pos=c.produced;let ghost previous=c.history@;
         let next=c.step(s,cap)?;left=left-1;

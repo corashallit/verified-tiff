@@ -1037,6 +1037,166 @@ fn lz_validate(s:&[u8],start:usize,count:usize,needed:usize,budget:&mut Budget) 
     }
 }
 
+// Copies an earlier, disjoint range of one buffer forward.
+fn copy_within(output:&mut [u8],src:usize,dst:usize,n:usize)
+    requires src as int+n<=dst,dst as int+n<=old(output).len(),
+    ensures final(output).len()==old(output).len(),
+        forall|i:int| 0<=i<n ==> #[trigger] final(output)@[dst as int+i]==old(output)@[src as int+i],
+        forall|i:int| 0<=i<old(output).len() && !(dst<=i<dst as int+n) ==> final(output)@[i]==old(output)@[i],
+{
+    let mut j=0usize;
+    while j<n
+        invariant j<=n,src as int+n<=dst,dst as int+n<=output.len(),output.len()==old(output).len(),
+            forall|i:int| 0<=i<j ==> #[trigger] output@[dst as int+i]==old(output)@[src as int+i],
+            forall|i:int| 0<=i<output.len() && !(dst<=i<dst as int+j) ==> output@[i]==old(output)@[i],
+        decreases n-j,
+    {
+        let b=output[src+j];output[dst+j]=b;j=j+1;
+    }
+}
+
+// Copies an earlier range forward in eight-byte chunks. Unlike copy_within it
+// may also overwrite [dst+n, limit), which the caller writes afterwards.
+#[inline(always)]
+fn copy_ahead(output:&mut [u8],src:usize,dst:usize,n:usize,limit:usize)
+    requires src as int+n<=dst,dst as int+n+7<=limit,limit<=old(output).len(),
+    ensures final(output).len()==old(output).len(),
+        forall|i:int| 0<=i<n ==> #[trigger] final(output)@[dst as int+i]==old(output)@[src as int+i],
+        forall|i:int| 0<=i<old(output).len() && !(dst<=i<limit) ==> final(output)@[i]==old(output)@[i],
+{
+    let mut k=0usize;
+    while k<n
+        invariant k<n+8,src as int+n<=dst,dst as int+n+7<=limit,limit<=output.len(),output.len()==old(output).len(),
+            forall|i:int| 0<=i<k && i<n ==> #[trigger] output@[dst as int+i]==old(output)@[src as int+i],
+            forall|i:int| 0<=i<output.len() && !(dst<=i<limit) ==> output@[i]==old(output)@[i],
+        decreases n+8-k,
+    {
+        // Bytes read past src+n may already be overwritten; they only land
+        // past dst+n.
+        let (_,tail)=output.split_at(src+k);let (a,_)=tail.split_at(8);
+        let (b0,b1,b2,b3)=(a[0],a[1],a[2],a[3]);let (b4,b5,b6,b7)=(a[4],a[5],a[6],a[7]);
+        let (_,tail)=output.split_at_mut(dst+k);let (w,_)=tail.split_at_mut(8);
+        w[0]=b0;w[1]=b1;w[2]=b2;w[3]=b3;w[4]=b4;w[5]=b5;w[6]=b6;w[7]=b7;
+        k=k+8;
+    }
+}
+
+// Validates and writes a segment in one pass. Acceptance is exactly
+// lzw_valid and each written byte is lzw_byte. Every dictionary entry is
+// already in the output (its parent's phrase followed by the next phrase's
+// first byte), so a phrase is one copy from its recorded position instead of
+// a prefix-chain walk. Failure may change the first `needed` bytes only.
+fn lz_decode(s:&[u8],start:usize,count:usize,needed:usize,output:&mut [u8]) -> (r:Result<(),Error>)
+    requires range_ok(s.len() as int,start as int,count as int),needed<=old(output).len(),needed<=u32::MAX,
+    ensures final(output).len()==old(output).len(),
+        r.is_ok() == lzw_valid(s@,start as int,start as int+count,needed as int),
+        r.is_ok() ==> forall|k:int| 0<=k<needed ==> final(output)@[k]==lzw_byte(s@,start as int,start as int+count,k),
+        forall|k:int| needed<=k<old(output).len() ==> final(output)@[k]==old(output)@[k],
+{
+    reveal(lzw_valid);reveal(lzw_byte);
+    let legacy=lz_is_legacy(s,start,count);
+    let mut bits=LzBits{at:start,bit:0,end:start+count,legacy};
+    if bits.read(s,9)?!=256 { return Err(Error::Invalid); }
+    let mut table=LzTable::new();
+    let mut pos=[0u32;4096];
+    let mut i=0usize;
+    let mut last=0usize;
+    loop
+        invariant bits.valid(s@), table.valid(), bits.end==start+count,
+            bits.legacy==lz_legacy(s@,start as int,start as int+count),
+            i<=needed,needed<=output.len(),output.len()==old(output).len(),needed<=u32::MAX,
+            lzw_valid(s@,start as int,start as int+count,needed as int)
+                == lz_valid(s@,bits.pos(),bits.end as int,table._dict@,table.prev as int,needed-i,bits.legacy),
+            forall|k:int| 0<=k<i ==> output@[k]==#[trigger] lzw_byte(s@,start as int,start as int+count,k),
+            forall|k:int| i<=k<needed ==> #[trigger] lzw_byte(s@,start as int,start as int+count,k)
+                == lz_byte(s@,bits.pos(),bits.end as int,table._dict@,table.prev as int,k-i,bits.legacy),
+            forall|k:int| needed<=k<output.len() ==> #[trigger] output@[k]==old(output)@[k],
+            table.prev!=256 ==> last+table._dict@[table.prev as int].len()==i
+                && forall|k:int| 0<=k<table._dict@[table.prev as int].len()
+                    ==> output@[last+k]==#[trigger] table._dict@[table.prev as int][k],
+            forall|e:int| 258<=e<table.next ==> (#[trigger] pos@[e]) as int+table._dict@[e].len()<=i,
+            forall|e:int,k:int| 258<=e<table.next && 0<=k<table._dict@[e].len()
+                ==> output@[pos@[e] as int+k]==#[trigger] table._dict@[e][k],
+        decreases bits.end as int*8-bits.pos(),
+    {
+        reveal_with_fuel(lz_valid,1);
+        if i==needed && table.prev!=256 && bits.at_tail() { return Ok(()); }
+        let ghost at=bits.pos();
+        let ghost d=table._dict@;
+        let ghost p=table.prev as int;
+        let ghost o=output@;
+        proof { if p!=256 { table.entry(p); } }
+        let c=bits.read(s,table.width(bits.legacy))?;
+        if c==256 {
+            table.clear();
+            proof {
+                assert forall|k:int| i<=k<needed implies #[trigger] lzw_byte(s@,start as int,start as int+count,k)
+                    == lz_byte(s@,bits.pos(),bits.end as int,table._dict@,table.prev as int,k-i,bits.legacy) by {
+                    reveal_with_fuel(lz_byte,1);
+                }
+            }
+        } else if c==257 {
+            if i!=needed || (bits.at<bits.end && bits.end-bits.at>1)
+                || (bits.at<bits.end && bits.bit==0) { return Err(Error::Invalid); }
+            return Ok(());
+        } else {
+            let slot=table.next;
+            let created=table.prev!=256 && table.next<4096;
+            let len=table.data(c,bits.legacy)?;
+            if len>needed-i { return Err(Error::Invalid); }
+            let ghost phrase=table._dict@[c as int];
+            proof {
+                assert(phrase==lz_phrase(d,p,c as int));
+                if c>=258 && c<slot { assert(phrase==d[c as int]); }
+                if c==slot { assert(phrase==d[p].push(d[p][0])); }
+            }
+            if c<256 {
+                output[i]=c as u8;
+            } else if c==slot {
+                if len+7<=needed-i {copy_ahead(output,last,i,len-1,needed);} else {copy_within(output,last,i,len-1);}
+                output[i+len-1]=output[last];
+            } else {
+                proof {
+                    assert(lz_defined(d,c as int));
+                    assert(pos@[c as int] as int+d[c as int].len()<=i);
+                }
+                if len+7<=needed-i {copy_ahead(output,pos[c] as usize,i,len,needed);} else {copy_within(output,pos[c] as usize,i,len);}
+            }
+            proof {
+                assert forall|k:int| 0<=k<len implies output@[i as int+k]==#[trigger] phrase[k] by {
+                    if c<256 {
+                    } else if c==slot {
+                        if k<len-1 { assert(o[last+k]==d[p][k]); }
+                        else { assert(o[last as int]==d[p][0]); }
+                    } else {
+                        assert(o[pos@[c as int] as int+k]==d[c as int][k]);
+                    }
+                }
+            }
+            if created { pos[slot]=last as u32; }
+            proof {
+                assert forall|k:int| i<=k<needed implies #[trigger] lzw_byte(s@,start as int,start as int+count,k)
+                    == (if k-i<len {phrase[k-i]} else {lz_byte(s@,bits.pos(),bits.end as int,table._dict@,c as int,k-i-len,bits.legacy)}) by {
+                    reveal_with_fuel(lz_byte,1);
+                }
+                assert forall|e:int,k:int| 258<=e<table.next && 0<=k<table._dict@[e].len()
+                    implies output@[pos@[e] as int+k]==#[trigger] table._dict@[e][k] by {
+                    if e<slot {
+                        assert(table._dict@[e]==d[e]);
+                        assert(o[pos@[e] as int+k]==d[e][k]);
+                    } else {
+                        assert(table._dict@[e]==d[p].push(phrase[0]));
+                        if k<d[p].len() { assert(o[last+k]==d[p][k]); }
+                        else { assert(output@[i as int+0]==phrase[0]); }
+                    }
+                }
+            }
+            last=i;
+            i=i+len;
+        }
+    }
+}
+
 struct LzCursor {
     table:LzTable, bits:LzBits, buf:[u8;4096], used:usize, len:usize,
     emitted:usize,
@@ -1301,14 +1461,14 @@ impl PbCursor {
             emitted: 0, data: start, run: 0, repeat: false }
     }
 
-    fn next(&mut self, s: &[u8]) -> (v: u8)
+    // Loads packets until the current run is nonempty.
+    fn load(&mut self, s: &[u8])
         requires old(self).valid(s@), old(self).emitted < old(self)._needed,
         ensures final(self).valid(s@), final(self)._start == old(self)._start,
             final(self).end == old(self).end, final(self)._stride == old(self)._stride,
             final(self)._needed == old(self)._needed,
-            final(self).emitted == old(self).emitted + 1,
-            final(self).at >= old(self).at,
-            v == pb_byte(s@, old(self)._start as int, old(self).end as int, old(self).emitted as int),
+            final(self).emitted == old(self).emitted, final(self).at >= old(self).at,
+            final(self).run > 0,
     {
         while self.run == 0
             invariant self.valid(s@), self.emitted < self._needed,
@@ -1321,7 +1481,7 @@ impl PbCursor {
             let ghost before = *self;
             let packet = pb_packet(s, self.at, self.end);
             assert(packet.is_ok());
-            let p = match packet { Ok(p) => p, Err(_) => { return 0; } };
+            let p = match packet { Ok(p) => p, Err(_) => { return; } };
             proof {
                 assert forall|k: int| 0 <= k < p.len implies
                     #[trigger] pb_byte(s@, self._start as int, self.end as int, self.emitted as int + k)
@@ -1336,6 +1496,18 @@ impl PbCursor {
             }
             self.data = p.data; self.run = p.len; self.repeat = p.repeat; self.at = p.next;
         }
+    }
+
+    fn next(&mut self, s: &[u8]) -> (v: u8)
+        requires old(self).valid(s@), old(self).emitted < old(self)._needed,
+        ensures final(self).valid(s@), final(self)._start == old(self)._start,
+            final(self).end == old(self).end, final(self)._stride == old(self)._stride,
+            final(self)._needed == old(self)._needed,
+            final(self).emitted == old(self).emitted + 1,
+            final(self).at >= old(self).at,
+            v == pb_byte(s@, old(self)._start as int, old(self).end as int, old(self).emitted as int),
+    {
+        self.load(s);
         let v = s[self.data];
         let ghost before = *self;
         proof { before.run_byte(s@, 0); }
@@ -1357,6 +1529,51 @@ impl PbCursor {
             }
         }
         v
+    }
+
+    // Emits the current packet's run, at most `max` bytes, as one slice copy
+    // or fill instead of one cursor step per byte.
+    fn take(&mut self, s: &[u8], output: &mut [u8], at: usize, max: usize) -> (n: usize)
+        requires old(self).valid(s@), 0 < max <= old(self)._needed - old(self).emitted,
+            at as int + max <= old(output).len(),
+        ensures final(self).valid(s@), final(self)._start == old(self)._start,
+            final(self).end == old(self).end, final(self)._stride == old(self)._stride,
+            final(self)._needed == old(self)._needed,
+            0 < n <= max, final(self).emitted == old(self).emitted + n,
+            final(output).len() == old(output).len(),
+            forall|k: int| 0 <= k < n ==> #[trigger] final(output)@[at as int + k]
+                == pb_byte(s@, old(self)._start as int, old(self).end as int, old(self).emitted as int + k),
+            forall|k: int| 0 <= k < old(output).len() && !(at <= k < at as int + n)
+                ==> final(output)@[k] == old(output)@[k],
+    {
+        if self.run == 0 { self.load(s); }
+        let n = if self.run < max { self.run } else { max };
+        let ghost before = *self;
+        if self.repeat {
+            fill_byte_run(output, at, n, s[self.data]);
+        } else {
+            copy_byte_run(s, self.data, output, at, n, false);
+            self.data = self.data + n;
+        }
+        self.run = self.run - n;
+        self.emitted = self.emitted + n;
+        proof {
+            assert forall|k: int| 0 <= k < n implies #[trigger] output@[at as int + k]
+                == pb_byte(s@, self._start as int, self.end as int, before.emitted as int + k) by {
+                before.run_byte(s@, k);
+            }
+            assert forall|k: int| 0 <= k < self.run implies
+                #[trigger] pb_byte(s@, self._start as int, self.end as int, self.emitted as int + k)
+                    == s@[self.data as int + if self.repeat { 0int } else { k }] by {
+                before.run_byte(s@, k + n);
+            }
+            assert forall|k: int| self.run <= k < self._needed - self.emitted implies
+                #[trigger] pb_byte(s@, self._start as int, self.end as int, self.emitted as int + k)
+                    == pb_byte(s@, self.at as int, self.end as int, k - self.run) by {
+                before.tail_byte(s@, k + n);
+            }
+        }
+        n
     }
 }
 
@@ -2855,6 +3072,38 @@ proof fn tile_row_mapping(g:Geometry,y:int,x:int,n:int,i:int)
         requires g.local(k)==((y%(g.block_height as int))*bw+x%bw+ix)*ch+c,i==ch*ix+c;
 }
 
+// A full-width strip owns one contiguous span of interleaved output bytes,
+// and its local index is the offset inside that span.
+proof fn strip_span(g:Geometry,k:int,rows:int,q:int)
+    requires g.positive(),!g.bilevel,g.block_width==g.width,g.across==1,0<=k,1<=rows<=g.block_height,
+        k*g.block_height+rows<=g.height,rows==g.block_height || k*g.block_height+rows==g.height,
+        0<=q<g.width as int*g.height*g.channels,
+    ensures (g.segment(q)==k)==(k*g.block_height*g.width*g.channels<=q<(k*g.block_height+rows)*g.width*g.channels),
+        g.segment(q)==k ==> g.local(q)==q-k*g.block_height*g.width*g.channels,
+{
+    let ch=g.channels as int;let w=g.width as int;let bh=g.block_height as int;let h=g.height as int;
+    let p=q/ch;let c=q%ch;quotient_remainder(q,ch);
+    let y=p/w;let x=p%w;quotient_remainder(p,w);
+    let s=y/bh;let r=y%bh;quotient_remainder(y,bh);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(x,w,0,x);
+    assert(g.segment(q)==s);
+    assert(g.local(q)==(r*w+x)*ch+c);
+    let base=k*bh*w*ch;
+    assert(0<=y<h) by(nonlinear_arith) requires 0<=p,0<=x<w,p==w*y+x,0<=q<w*h*ch,q==ch*p+(q%ch),0<=q%ch<ch;
+    if s==k {
+        assert(r<rows) by(nonlinear_arith) requires y==bh*s+r,s==k,y<h,r<bh,rows==bh || k*bh+rows==h;
+        assert(q-base==(r*w+x)*ch+c) by(nonlinear_arith) requires q==ch*p+c,p==w*y+x,y==bh*s+r,s==k,base==k*bh*w*ch;
+        assert(base<=q<(k*bh+rows)*w*ch) by(nonlinear_arith)
+            requires q-base==(r*w+x)*ch+c,0<=r<rows,0<=x<w,0<=c<ch,base==k*bh*w*ch,w>0,ch>0;
+    } else if s<k {
+        assert(y<k*bh) by(nonlinear_arith) requires y==bh*s+r,r<bh,s<k,bh>0;
+        assert(q<base) by(nonlinear_arith) requires q==ch*p+c,p==w*y+x,y<k*bh,0<=x<w,0<=c<ch,base==k*bh*w*ch,w>0,ch>0;
+    } else {
+        assert(y>=k*bh+rows) by(nonlinear_arith) requires y==bh*s+r,0<=r,s>k,rows<=bh,bh>0;
+        assert(q>=(k*bh+rows)*w*ch) by(nonlinear_arith) requires q==ch*p+c,p==w*y+x,y>=k*bh+rows,0<=x,0<=c,w>0,ch>0;
+    }
+}
+
 fn copy_byte_run(input:&[u8],src:usize,output:&mut [u8],dst:usize,n:usize,invert:bool)
     requires src as int+n<=input.len(),dst as int+n<=old(output).len(),
     ensures final(output).len()==old(output).len(),
@@ -2877,6 +3126,23 @@ fn copy_byte_run(input:&[u8],src:usize,output:&mut [u8],dst:usize,n:usize,invert
         {
             target[i]=255-source[i];i=i+1;
         }
+    }
+}
+
+fn fill_byte_run(output:&mut [u8],dst:usize,n:usize,v:u8)
+    requires dst as int+n<=old(output).len(),
+    ensures final(output).len()==old(output).len(),
+        forall|i:int| 0<=i<n ==> #[trigger] final(output)@[dst as int+i]==v,
+        forall|i:int| 0<=i<old(output).len() && !(dst<=i<dst as int+n) ==> final(output)@[i]==old(output)@[i],
+{
+    let (_,target_tail)=output.split_at_mut(dst);
+    let (target,_)=target_tail.split_at_mut(n);
+    let mut i=0usize;
+    while i<n
+        invariant i<=n,target.len()==n,forall|j:int| 0<=j<i ==> target@[j]==v,
+        decreases n-i,
+    {
+        target[i]=v;i=i+1;
     }
 }
 

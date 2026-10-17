@@ -72,7 +72,7 @@ impl<'a> JpegSegment<'a> {
         self.render(scratch,output);
         Ok(())
     }
-    fn render(&self,scratch:&[u8],output:&mut [u8])
+    pub(super) fn render(&self,scratch:&[u8],output:&mut [u8])
         requires self.well_formed(),scratch.len()>=self.scratch,old(output).len()>=self.output,
             forall|j:int| 0<=j<self.scratch ==> scratch@[j]==crate::jpeg_transform::sample(self.coefficient_blocks()[j/64],j%64),
         ensures final(output).len()==old(output).len(),
@@ -122,29 +122,34 @@ impl<'a> JpegSegment<'a> {
                     assert(y as int*row+x as int*ch+count<=self.output) by(nonlinear_arith)
                         requires y<h,x+n<=w,row as int==w as int*ch,count as int==n as int*ch,self.output as int==h as int*row,ch>0;
                 }
-                let dst=y*row+x*ch;let mut i=0usize;
-                while i<count
+                // One pixel per step: all channels of a pixel share its geometry.
+                let dst=y*row+x*ch;let mut col=0usize;
+                while col<n
                     invariant self.well_formed(),w==self.v@[12],h==self.v@[13],ch==self.v@[14],hs==self.v@[15],
                         row as int==w as int*ch,y<h,x<w,x%8==0,0<n<=8,x+n<=w,
-                        dst as int==y as int*row+x as int*ch,count as int==n as int*ch,dst as int+count<=self.output,i<=count,
+                        dst as int==y as int*row+x as int*ch,count as int==n as int*ch,dst as int+count<=self.output,col<=n,
                         a==crate::jpeg_layout::index(self.v@,x as int,y as int,0),a as int+n<=self.scratch,
                         ch==3 ==> b==crate::jpeg_layout::index(self.v@,x as int,y as int,1) && d==crate::jpeg_layout::index(self.v@,x as int,y as int,2)
                             && b as int+(phase as int+n-1)/(hs as int)<self.scratch && d as int+(phase as int+n-1)/(hs as int)<self.scratch,
                         phase as int==(x as int%(hs as int*8))%(hs as int),phase<hs,
                         scratch.len()>=self.scratch,output.len()==old(output).len(),output.len()>=self.output,
                         forall|j:int| 0<=j<self.scratch ==> scratch@[j]==crate::jpeg_transform::sample(self.coefficient_blocks()[j/64],j%64),
-                        forall|j:int| 0<=j<dst as int+i ==> output@[j]==self.decoded_byte(j),
+                        forall|j:int| 0<=j<dst as int+col as int*ch ==> output@[j]==self.decoded_byte(j),
                         forall|j:int| self.output<=j<output.len() ==> output@[j]==old(output)@[j],
-                    decreases count-i,
+                    decreases n-col,
                 {
-                    let c=i%ch;let col=i/ch;
+                    assert(col as int*ch+ch<=count) by(nonlinear_arith) requires col<n,count as int==n as int*ch;
+                    let at=dst+col*ch;
                     proof {
-                        quotient_remainder(i as int,ch as int);
-                        assert(col<n) by(nonlinear_arith) requires i<count,count as int==n as int*ch,i as int==ch as int*col+c,c>=0,ch>0;
-                        let k=dst as int+i;let p=y as int*w+x+col;
-                        assert(k==p*ch+c) by(nonlinear_arith) requires k==dst as int+i,dst as int==y as int*row+x as int*ch,row as int==w as int*ch,i as int==ch as int*col+c,p==y as int*w+x+col;
-                        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(k,ch as int,p,c as int);
-                        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(p,w as int,y as int,x as int+col);
+                        let pp=y as int*w+x+col;
+                        assert(at as int==pp*ch) by(nonlinear_arith)
+                            requires at as int==dst as int+col as int*ch,dst as int==y as int*row+x as int*ch,row as int==w as int*ch,pp==y as int*w+x+col;
+                        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(at as int,ch as int,pp,0);
+                        if ch==3 {
+                            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(at as int+1,3,pp,1);
+                            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(at as int+2,3,pp,2);
+                        }
+                        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(pp,w as int,y as int,x as int+col);
                         crate::jpeg_layout::run_index(self.v@,x as int,y as int,0,col as int);
                         if ch==3 {
                             crate::jpeg_layout::run_index(self.v@,x as int,y as int,1,col as int);
@@ -152,12 +157,20 @@ impl<'a> JpegSegment<'a> {
                             vstd::arithmetic::div_mod::lemma_div_is_ordered(phase as int+col,phase as int+n-1,hs as int);
                         }
                     }
-                    let value=if self.ycbcr && ch==3 {
-                        let off=(phase+col)/hs;
-                        crate::jpeg_color::convert(scratch[a+col],scratch[b+off],scratch[d+off],c,self.limited)
-                    } else {scratch[if c==0 {a+col} else if c==1 {b+(phase+col)/hs} else {d+(phase+col)/hs}]};
-                    assert(value==self.decoded_byte(dst as int+i));
-                    output[dst+i]=value;i=i+1;
+                    if ch==3 {
+                        let off=if hs==1 {phase+col} else if hs==2 {(phase+col)/2} else if hs==4 {(phase+col)/4} else {(phase+col)/hs};
+                        let (y0,c1,c2)=(scratch[a+col],scratch[b+off],scratch[d+off]);
+                        let (v0,v1,v2)=if self.ycbcr {
+                            (crate::jpeg_color::convert(y0,c1,c2,0,self.limited),crate::jpeg_color::convert(y0,c1,c2,1,self.limited),crate::jpeg_color::convert(y0,c1,c2,2,self.limited))
+                        } else {(y0,c1,c2)};
+                        assert(v0==self.decoded_byte(at as int) && v1==self.decoded_byte(at as int+1) && v2==self.decoded_byte(at as int+2));
+                        output[at]=v0;output[at+1]=v1;output[at+2]=v2;
+                    } else {
+                        let v0=scratch[a+col];
+                        assert(v0==self.decoded_byte(at as int));
+                        output[at]=v0;
+                    }
+                    col=col+1;
                 }
                 x=x+n;
                 assert(x<w ==> x%8==0);
@@ -211,10 +224,45 @@ pub(super) fn prepare<'a>(s:&'a [u8],v:[usize;32],bits:Bits,legacy:bool,ycbcr:bo
     js::validate(s,v,bits,count,legacy)?;
     Ok(JpegSegment {input:s,v,bits,count,legacy,ycbcr,limited,scratch,output,work})
 }
+pub(super) fn prepare_into<'a>(s:&'a [u8],v:[usize;32],bits:Bits,legacy:bool,ycbcr:bool,limited:bool,limits:&Limits,budget:&mut Budget,scratch_room:&mut [u8]) -> (r:Result<(JpegSegment<'a>,bool),Error>)
+    requires jh::scan_ok(s@,v@),bits.valid(s@),
+    ensures final(budget).remaining<=old(budget).remaining,
+        r.is_ok()==(eligible(s@,v@,bits,legacy,*limits) && old(budget).remaining as int>=work(v@)),
+        r.is_ok() ==> final(budget).remaining as int+work(v@)==old(budget).remaining,
+        old(budget).remaining as int-final(budget).remaining<=work(v@),
+        old(budget).remaining as int-final(budget).remaining<=3137*(limits.max_output as int),
+        r.is_ok() ==> r.unwrap().0.well_formed() && r.unwrap().0.input@==s@ && r.unwrap().0.v==v && r.unwrap().0.bits==bits && r.unwrap().0.legacy==legacy && r.unwrap().0.ycbcr==ycbcr && r.unwrap().0.limited==limited,
+        r.is_ok() ==> r.unwrap().0.output<=limits.max_output && r.unwrap().0.scratch<=limits.max_output,
+        r.is_ok() ==> r.unwrap().0.output==pixel_count(v@) && r.unwrap().0.scratch==64*js::total(v@) && r.unwrap().0.work==work(v@),
+        final(scratch_room).len()==old(scratch_room).len(),
+        r.is_ok() && r.unwrap().1 ==> forall|j:int| 0<=j<r.unwrap().0.scratch ==> final(scratch_room)@[j]==crate::jpeg_transform::sample(r.unwrap().0.coefficient_blocks()[j/64],j%64),
+        r.is_ok() && r.unwrap().1 ==> forall|j:int| r.unwrap().0.scratch<=j<old(scratch_room).len() ==> final(scratch_room)@[j]==old(scratch_room)@[j],
+        r.is_ok() && !r.unwrap().1 ==> final(scratch_room)@==old(scratch_room)@,
+        r.is_ok() && r.unwrap().1 ==> old(scratch_room).len()>=r.unwrap().0.scratch,
+        r.is_ok() ==> r.unwrap().0.count==js::total(v@),
+        forall|j:int| limits.max_output<=j<old(scratch_room).len() ==> final(scratch_room)@[j]==old(scratch_room)@[j],
+{
+    reveal(eligible);
+    assert(js::total(v@)>=0);
+    assert(js::total(v@)<=js::total(v@)*64) by(nonlinear_arith) requires js::total(v@)>=0;
+    assert(v@[12] as int*v@[13]<=pixel_count(v@)) by(nonlinear_arith) requires v@[14]>=1;
+    if v[12]>limits.max_dimension || v[13]>limits.max_dimension {return Err(Error::Limit);}
+    let count=js::block_count(v)?;let need=mul(count,64)?;
+    let output=mul(mul(v[12],v[13])?,v[14])?;
+    if need>limits.max_output || output>limits.max_output {return Err(Error::Limit);}
+    let work=add(mul(count,3136)?,output)?;
+    assert(count as int<=limits.max_output) by(nonlinear_arith) requires need as int==count as int*64,need<=limits.max_output;
+    assert(work as int<=3137*(limits.max_output as int));
+    spend(budget,work)?;
+    // With room, the one validating pass also writes the samples.
+    let captured=scratch_room.len()>=need;
+    if captured {js::decode_checked(s,v,bits,count,legacy,scratch_room)?;} else {js::validate(s,v,bits,count,legacy)?;}
+    Ok((JpegSegment {input:s,v,bits,count,legacy,ycbcr,limited,scratch:need,output,work},captured))
+}
 pub(super) fn materialize<'a>(s:&'a [u8],v:[usize;32],bits:Bits,legacy:bool,ycbcr:bool,limited:bool,limits:&Limits) -> (r:Result<JpegSegment<'a>,Error>)
     requires jh::scan_ok(s@,v@),bits.valid(s@),eligible(s@,v@,bits,legacy,*limits),
     ensures r.is_ok(),r.unwrap().well_formed(),r.unwrap().input@==s@,r.unwrap().v==v,r.unwrap().bits==bits,r.unwrap().legacy==legacy,r.unwrap().ycbcr==ycbcr,r.unwrap().limited==limited,
-        r.unwrap().output==pixel_count(v@),r.unwrap().scratch==64*js::total(v@),r.unwrap().work==work(v@),
+        r.unwrap().output==pixel_count(v@),r.unwrap().scratch==64*js::total(v@),r.unwrap().work==work(v@),r.unwrap().count==js::total(v@),
 {
     reveal(eligible);
     assert(js::total(v@)>=0);

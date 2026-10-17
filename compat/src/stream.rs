@@ -1,7 +1,8 @@
 //! Bounded input windows and resumable native reads at the unverified I/O
 //! boundary. Packet, LZW dictionary, bit and Deflate steps are verified core
 //! operations. Complete validation precedes exposure of any requested bytes.
-//! Full Deflate requests validate while decoding into private staging; partial
+//! Full Deflate requests validate while decoding into private staging, and
+//! admitted LZW segments decode whole in one verified pass. Other partial
 //! requests validate first and then replay through a bounded stream.
 use super::*;
 use verified_tiff::{native_stream as core,native_samples as ns,native,adapter_window as window,adapter_bounds as checked};
@@ -13,8 +14,13 @@ impl Input{
         let data=Buf::zeros(count.min(WINDOW),source.input,&source.mem)?;
         let mut s=Self{data,len:0,loaded:0,count,off,at:0,bit:0,reverse};s.ensure(source,WINDOW)?;Ok(s)
     }
+    #[inline(always)]
     fn ensure(&mut self,source:&mut Source,n:usize)->R<()>{
         if self.len-self.at>=n||self.loaded==self.count{return Ok(());}
+        self.refill(source)
+    }
+    #[cold]
+    fn refill(&mut self,source:&mut Source)->R<()>{
         let (rest,n,loaded)=window::refill_plan(self.data.len(),self.len,self.at,self.loaded,self.count).map_err(err)?;
         window::compact(&mut self.data,self.at,self.len).map_err(err)?;
         // Publish cursor updates only after the exact checked source span arrives.
@@ -31,7 +37,7 @@ enum Engine{
     Lzw{state:core::Lzw,phrase:[u8;4096],at:usize,len:usize,previous_data:bool},
     Zlib{state:core::Inflater},
 }
-pub struct Stream{input:Input,engine:Buf<Engine>,pub produced:usize,needed:usize,cap:usize,row:usize,done:bool,budget:Budget}
+pub struct Stream{input:Input,engine:Buf<Engine>,pub produced:usize,needed:usize,cap:usize,row:usize,done:bool,discard:bool,budget:Budget}
 impl Stream{
     fn new(source:&mut Source,off:u64,count:usize,codec:u16,row:usize,needed:usize,cap:usize,reverse:bool,quota:usize)->R<Self>{
         if row==0||needed==0||needed>cap{return Err((INVALID,"stream geometry"));}
@@ -44,7 +50,7 @@ impl Stream{
             8|32946=>{let state=core::Inflater::new(&input.data[..input.len],cap).map_err(err)?;input.at=2;Engine::Zlib{state}},
             _=>return Err((NOTIMPL,"codec requires a complete segment")),
         };engine.push(state)?;
-        Ok(Self{input,engine,produced:0,needed,cap,row,done:false,budget:Budget{remaining:quota}})
+        Ok(Self{input,engine,produced:0,needed,cap,row,done:false,discard:false,budget:Budget{remaining:quota}})
     }
     fn charge(&mut self,n:usize)->R<()>{verified_tiff::spend(&mut self.budget,n).map_err(err)}
     /// Return the next bounded batch. A zero-length result means a validated
@@ -78,18 +84,25 @@ impl Stream{
                 Engine::Lzw{state,phrase,at,len,previous_data}=>{
                     if *at<*len{
                         let n=(*len-*at).min(out.len()-written);
-                        out[written..written+n].copy_from_slice(&phrase[*at..*at+n]);*at+=n;self.produced+=n;written+=n;self.charge(n)?;
+                        if !self.discard{out[written..written+n].copy_from_slice(&phrase[*at..*at+n]);}
+                        *at+=n;self.produced+=n;written+=n;self.charge(n)?;
                     }else{
                         if self.produced==self.needed&&*previous_data&&self.input.remaining_bits()?<8{self.done=true;continue;}
                         self.input.ensure(source,3)?;
                         let (code,next,bit)=core::lzw_code(&self.input.data[..self.input.len],self.input.at,self.input.bit,state.width(),state.is_legacy()).map_err(err)?;
                         self.input.at=next;self.input.bit=bit;
-                        *len=state.code(code,phrase).map_err(err)?;*at=0;
+                        *len=if self.discard{state.skip(code)}else{state.code(code,phrase)}.map_err(err)?;*at=0;
                         if *len>self.needed-self.produced{return Err((INVALID,"excess LZW output"));}
                         *previous_data=code!=256&&code!=257;
                         if code==257{
                             if self.produced!=self.needed||self.input.remaining_bits()?>=8{return Err((INVALID,"LZW ending/length"));}
                             self.done=true;
+                        }else if *len>0{
+                            // Emit at once, charging the unit its own pass would.
+                            let n=(*len).min(out.len()-written);
+                            verified_tiff::spend(&mut self.budget,1).map_err(err)?;
+                            if !self.discard{out[written..written+n].copy_from_slice(&phrase[..n]);}
+                            *at=n;self.produced+=n;written+=n;self.charge(n)?;
                         }
                     }
                 }
@@ -110,7 +123,10 @@ impl Stream{
         }
         Ok(written)
     }
-    fn finish(&mut self,source:&mut Source)->R<()>{let mut discard=[0u8;4096];while !self.done{self.pull(source,&mut discard)?;}Ok(())}
+    /// Validate the rest of the segment, consuming the stream so it cannot be
+    /// read again. LZW phrases are counted, not expanded; each step, check and
+    /// charge is otherwise that of a pull into the discarded buffer.
+    fn finish(mut self,source:&mut Source)->R<()>{self.discard=true;let mut discard=[0u8;4096];while !self.done{self.pull(source,&mut discard)?;}Ok(())}
     fn range(&mut self,source:&mut Source,start:usize,out:&mut[u8])->R<()>{
         if start<self.produced||start>self.needed||out.len()>self.needed-start{return Err((INVALID,"stream range"));}
         let mut discard=[0u8;4096];
@@ -155,13 +171,30 @@ impl Handle{
         }else if m.predictor==2{
             if !matches!(m.bits,8|16|32|64)||matches!(m.format,5|6)||!matches!(m.compression,5|8|32946|50000){return Err((NOTIMPL,"horizontal predictor layout"));}
             let mut out=Buf::zeros(n,self.limits.max_output,mem)?;
-            ns::convert(&raw,row,if m.planar==2{1}else{m.ch},m.bits/8,m.le,true,cfg!(target_endian="little"),&mut out).map_err(err)?;Ok(out)
+            let (ch,le,ne)=(if m.planar==2{1}else{m.ch},m.le,cfg!(target_endian="little"));
+            // Constant widths and channel counts specialize the proved kernel.
+            let r=match (m.bits/8,ch){
+                (1,1)=>ns::convert(&raw,row,1,1,le,true,ne,&mut out),
+                (2,1)=>ns::convert(&raw,row,1,2,le,true,ne,&mut out),
+                (1,3)=>ns::convert(&raw,row,3,1,le,true,ne,&mut out),
+                (2,3)=>ns::convert(&raw,row,3,2,le,true,ne,&mut out),
+                (4,1)=>ns::convert(&raw,row,1,4,le,true,ne,&mut out),
+                (bytes,ch)=>ns::convert(&raw,row,ch,bytes,le,true,ne,&mut out),
+            };r.map_err(err)?;Ok(out)
         }else if m.predictor==1{
             let bytes=if matches!(m.format,5|6){m.bits/16}else{m.bits/8};
             if m.le!=cfg!(target_endian="little")&&matches!(m.bits,16|24|32|64|128)&&bytes>1{
                 let mut out=Buf::zeros(n,self.limits.max_output,mem)?;ns::swap_components(&raw,bytes,&mut out).map_err(err)?;Ok(out)
             }else{Ok(raw)}
         }else{Err((NOTIMPL,"sample predictor"))}
+    }
+    /// LZW segments with at most 1 MiB of input and output decode whole in one
+    /// verified pass when memory admits them, as cached small segments do:
+    /// complete requests into their staging, partial ones into the cache.
+    fn lzw_whole(&self,needed:usize,count:usize)->bool{
+        let copies=if self.meta.predictor==1&&self.meta.le==cfg!(target_endian="little"){1}else{3};
+        needed<=1048576&&count<=1048576&&count<=self.source.input&&needed<=self.limits.max_output
+            &&self.source.mem.fits(needed.max(count),needed*copies+count)
     }
     pub fn native_range(&mut self,k:usize,start:usize,len:usize,budget:&mut Budget)->R<Buf<u8>>{
         let rows=self.meta.segment_rows(k)?;let (row,rows)=self.native_layout(self.meta.bw,rows)?;let needed=product(row,rows)?;
@@ -181,7 +214,14 @@ impl Handle{
             if first==start&&last==end{return Ok(raw);}
             let mut out=Buf::zeros(len,self.limits.max_output,&self.source.mem)?;out.copy_from_slice(&raw[start-first..end-first]);return Ok(out);
         }
-        if !self.streaming_codec()||(needed<=65536&&count<=65536){
+        let small=needed<=65536&&count<=65536;let complete=start==0&&len==needed;
+        let whole=!small&&self.meta.compression==5&&self.lzw_whole(needed,count);
+        if !self.streaming_codec()||small||(whole&&!complete){
+            if whole&&!self.cache.as_ref().is_some_and(|(i,_)|*i==k){
+                // Retain the stream's conservative validation-plus-replay charge.
+                let extra=native::work_limit(count,needed).map_err(err)?;
+                if extra>budget.remaining{return Err((LIMIT,"stream validation/decode budget"));}budget.remaining-=extra;
+            }
             self.segment(k,budget)?;let mut out=Buf::zeros(len,self.limits.max_output,&self.source.mem)?;
             out.copy_from_slice(&self.cache.as_ref().unwrap().1[start..start+len]);return Ok(out);
         }
@@ -190,12 +230,18 @@ impl Handle{
         // A complete native request already owns its entire staging buffer.
         // Decode once into that private buffer, validate the ending/checksum,
         // then return it. No caller-visible bytes are committed before success.
-        if start==0&&len==needed&&matches!(self.meta.compression,5|8|32946){
+        if complete&&matches!(self.meta.compression,5|8|32946){
             self.stream=None;self.cache=None;
             let cap=if matches!(self.meta.compression,8|32946)&&!self.meta.tiled{product(row,self.meta.bh)?}else{needed};
             let quota=native::work_limit(count,cap).map_err(err)?;
             // Retain the former conservative validation-plus-replay charge.
             let total=product(quota,2)?;if total>budget.remaining{return Err((LIMIT,"stream validation/decode budget"));}budget.remaining-=total;
+            if whole{
+                let mut encoded=self.source.read(off,count)?;
+                if self.meta.fill==2{ns::reverse_bits(&mut encoded);}
+                native::decode(&encoded,5,row,needed,cap,&mut raw,&mut Budget{remaining:quota}).map_err(err)?;
+                return self.transform_native(raw,row);
+            }
             let mut stream=Stream::new(&mut self.source,off,count,self.meta.compression,row,needed,cap,self.meta.fill==2,quota)?;
             stream.range(&mut self.source,0,&mut raw)?;
             stream.finish(&mut self.source)?;
@@ -210,8 +256,8 @@ impl Handle{
             let quota=native::work_limit(count,cap).map_err(err)?;
             let total=product(quota,2)?;if total>budget.remaining{return Err((LIMIT,"stream validation/decode budget"));}budget.remaining-=total;
             let codec=self.meta.compression;let reverse=self.meta.fill==2;
-            let mut check=Stream::new(&mut self.source,off,count,codec,row,needed,cap,reverse,quota)?;
-            check.finish(&mut self.source)?;drop(check);
+            let check=Stream::new(&mut self.source,off,count,codec,row,needed,cap,reverse,quota)?;
+            check.finish(&mut self.source)?;
             let stream=Stream::new(&mut self.source,off,count,codec,row,needed,cap,reverse,quota)?;
             self.stream=Some(Cached{k,stream});
         }

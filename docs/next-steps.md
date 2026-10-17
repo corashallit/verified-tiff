@@ -37,20 +37,30 @@ acceptance proofs. Preserve the missing-EOL and duplicate-endpoint policies in
    controlled results. Word-based LZW/Deflate reads, exact JPEG transform
    factorization, JPEG row mapping, tile-row copies, shared bilevel span geometry, alpha/native-layout
    shortcuts and contiguous Deflate strip writes are implemented. The opt-in
-   combined Deflate API avoids replaying validated strips; its tiled fallback,
-   JPEG/LZW pipelines and partial compressed C reads still do separate validation
-   and decode. The C reader now batches streaming Deflate, stages complete native
+   combined Deflate API avoids replaying validated strips, and LZW and JPEG now
+   validate while decoding; the tiled Deflate fallback and partial compressed C
+   reads still do separate validation and decode. The C reader now batches streaming Deflate, stages complete native
    Deflate requests in one pass, and uses a proved top-bit refinement for LERC.
    Specialized, verified 8/16-bit RGB/gray rows, fused RGB alpha presentation,
    cached-segment borrowing and memory-admitted complete RGBA Deflate staging
    are now implemented. The earlier Deflate/LERC pass recorded two small-strip
    regressions; its original measurements remain in `reader-optimization.md`.
    Large RGB Deflate and LERC are substantially faster but still trail libtiff.
-   Remaining work includes reusable Huffman prefix tables, bulk Deflate
-   stored/match loops, packed bilevel expansion and adapter allocation/replay.
-   Retain all semantic/acceptance contracts and benchmark each change: a tested
-   JPEG speculative lookahead implementation was removed because it regressed
-   textured images. Do not trade exact JPEG output for faster approximate math.
+   Remaining work includes reusable Huffman prefix tables, a wider JPEG bit
+   reader, LZW per-code dictionary overhead and adapter replay. Stripped fax
+   images could decode straight into the output with no scratch buffer, but
+   that only pays off when the scratch pages are never touched; prefer a
+   verified scratch-free fax contract to `unsafe` zeroed allocation in the
+   adapter. In-place VP8 token probabilities help textured lossy WebP but
+   cost the other lossy fixtures. Row-wise byte prediction and
+   register-carried 16-bit prediction verify alone, but in the same module
+   they push the native `predictor` and `store-byte` gates into the solver's
+   resource limit; restructure those proofs first. A commit's effect can
+   depend on unrelated code through LLVM's codegen-unit split, so re-measure
+   later commits after dropping one, and use callgrind instruction counts to
+   separate real effects from layout noise.
+   Retain all semantic/acceptance contracts and benchmark each change. Do not
+   trade exact JPEG output for faster approximate math.
 4. **Add codecs one at a time.** PackBits and LZW are implemented for bilevel, Gray8, and
    RGB8 with optional 8-bit alpha. Deflate now supports all current representations. CCITT Group 3/4 now supports bilevel scans with explicit compatibility rules.
    Float64 and its Predictor 2 are implemented. The single-group WebP lossless subset now covers the original opaque-alpha fixture. The native C path now includes predictor/color/palette transforms, entropy meta-images, lossy VP8 and ALPH with separate checked models. The native C path now supports integer Predictor 2 and float32. Predictor 3 and byte-aligned CCITT RLE now have separate verified native APIs used by the C reader. Dictionary-free ZSTD now has a verified native segment API with full block/literal/FSE modes and checksum validation. Lerc2 v4 and static VP8/VP8L now have verified native APIs. A subsequent task can integrate these native formats into the complete whole-image acceptance model. Give each codec its own input/output relation,

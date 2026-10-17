@@ -66,7 +66,7 @@ impl Handle{
             let count=product(m.bw,rows)?;let mut pixels=Buf::zeros(count,self.limits.max_output,mem)?;
             verified_tiff::native_rle::decode(&encoded,m.bw,rows,m.fill==2,&mut pixels,budget).map_err(err)?;
             let mut out=Buf::zeros(needed,self.limits.max_output,mem)?;
-            for y in 0..rows{for x in 0..m.bw{out[y*row+x/8]|=(pixels[y*m.bw+x]/255)<<(7-x%8);}}out
+            pack_bilevel(&pixels,m.bw,rows,row,0,&mut out)?;out
         }else{self.special(k,&encoded,budget)?};
         if output.len()!=needed{return Err((NOTIMPL,"special codec native layout mismatch"));}
         Ok(output)
@@ -202,15 +202,18 @@ impl Handle{
     fn special(&mut self,k:usize,encoded:&[u8],budget:&mut Budget)->R<Buf<u8>>{
         if !matches!(self.meta.compression,3|4|6|7|50001|34676){return Err((NOTIMPL,"compression not implemented"));}
         let source=self.synthetic(k,encoded,budget)?;
-        let image=inspect_raster(&source,0,&self.limits,budget).map_err(err)?;
-        let mut pixels=Buf::zeros(image.output_len(),self.limits.max_output,&self.source.mem)?;
-        let mut scratch=Buf::zeros(image.scratch_len(),self.limits.max_output,&self.source.mem)?;
-        image.decode_with_scratch(&mut pixels,&mut scratch,budget).map_err(err)?;
+        let once=if matches!(self.meta.compression,6|7){self.jpeg_once(k,&source,budget)?}else{None};
+        let pixels=match once{Some(p)=>p,None=>{
+            let image=inspect_raster(&source,0,&self.limits,budget).map_err(err)?;
+            let mut pixels=Buf::zeros(image.output_len(),self.limits.max_output,&self.source.mem)?;
+            let mut scratch=Buf::zeros(image.scratch_len(),self.limits.max_output,&self.source.mem)?;
+            image.decode_with_scratch(&mut pixels,&mut scratch,budget).map_err(err)?;pixels
+        }};
         let m=&self.meta;
         if m.bits==1{
             let rows=m.segment_rows(k)?;let row=m.row_bytes(m.bw)?;
             let mut out=Buf::zeros(product(row,rows)?,self.limits.max_output,&self.source.mem)?;
-            for y in 0..rows{for x in 0..m.bw{let v=pixels[y*m.bw+x]/255;let v=if m.photo==0{1-v}else{v};out[y*row+x/8]|=v<<(7-x%8);}}Ok(out)
+            pack_bilevel(&pixels,m.bw,rows,row,if m.photo==0{0xff}else{0},&mut out)?;Ok(out)
         }else if m.compression==34676 && !self.logluv16{
             let mut out=Buf::zeros(product(pixels.len(),2)?,self.limits.max_output,&self.source.mem)?;
             for (p,q) in pixels.chunks_exact(6).zip(out.chunks_exact_mut(12)){
@@ -229,6 +232,28 @@ impl Handle{
             let mut out=Buf::zeros(pixels.len(),self.limits.max_output,&self.source.mem)?;
             ns::convert(&pixels,m.row_bytes(m.bw)?,m.ch,2,true,false,false,&mut out).map_err(err)?;Ok(out)
         }else{Ok(pixels)}
+    }
+    /// One validating entropy pass for a JPEG segment whose estimated buffers
+    /// fit. The probe's work is charged whatever its outcome. An input error is
+    /// final; an undersized estimate leaves the rest of the budget to the
+    /// general path.
+    fn jpeg_once(&self,k:usize,source:&[u8],budget:&mut Budget)->R<Option<Buf<u8>>>{
+        let m=&self.meta;let Ok(rows)=m.segment_rows(k) else {return Ok(None)};
+        let Some(len)=m.bw.checked_mul(rows).and_then(|n|n.checked_mul(m.ch)) else {return Ok(None)};
+        // Each component has at most ceil(n/8)+3 blocks per axis (sampling <= 4).
+        let blocks=(m.bw.div_ceil(8)+3).checked_mul(rows.div_ceil(8)+3).and_then(|n|n.checked_mul(m.ch));
+        let Some(room)=blocks.and_then(|n|n.checked_mul(64)).and_then(|n|n.checked_add(len)) else {return Ok(None)};
+        let room=room.min(self.limits.max_output);
+        let Ok(mut pixels)=Buf::zeros(len,self.limits.max_output,&self.source.mem) else {return Ok(None)};
+        let Ok(mut scratch)=Buf::zeros(room,self.limits.max_output,&self.source.mem) else {return Ok(None)};
+        let mut probe=Budget{remaining:budget.remaining};
+        let r=decode_jpeg_into(source,0,&self.limits,&mut pixels,&mut scratch,&mut probe);
+        budget.remaining=probe.remaining;
+        match r{
+            Ok(image) if image.output_len()==len=>Ok(Some(pixels)),
+            Ok(_)|Err(Error::OutputTooSmall)=>Ok(None),
+            Err(e)=>Err(err(e)),
+        }
     }
     fn synthetic(&mut self,k:usize,encoded:&[u8],budget:&mut Budget)->R<Buf<u8>>{
         let first_offset=self.meta.offsets.get(&mut self.source,0)?;
@@ -303,28 +328,64 @@ impl Handle{
     }
 }
 
+// Unverified adapter packing of 0/255 bilevel samples, MSB first. For a u8
+// sample v/255 is exactly v==255. `flip` inverts stored bits; padding stays zero.
+fn pack_bilevel(pixels:&[u8],bw:usize,rows:usize,row:usize,flip:u8,out:&mut[u8])->R<()>{
+    if bw==0 || row<bw.div_ceil(8) || pixels.len()<product(rows,bw)? || out.len()<product(rows,row)?{return Err((INVALID,"bilevel raster size"));}
+    let bit=|p:u8,i:usize|((p==255) as u8)<<(7-i);
+    for (line,dest) in pixels.chunks_exact(bw).take(rows).zip(out.chunks_exact_mut(row)){
+        let mut groups=line.chunks_exact(8);let mut bytes=dest.iter_mut();
+        for (g,d) in (&mut groups).zip(&mut bytes){*d=pack8(g)^flip;}
+        let rest=groups.remainder();
+        if !rest.is_empty(){if let Some(d)=bytes.next(){
+            let mut b=0u8;for (i,&p) in rest.iter().enumerate(){b|=bit(p,i);}
+            *d=(b^flip)&(0xffu8<<(8-rest.len()));
+        }}
+    }
+    Ok(())
+}
+
+// Eight samples per word: a byte's high bit survives exactly when it is 255
+// (0x7f-masked add, then OR, then NOT), and one multiply gathers the eight
+// flags MSB-first without carries.
+#[inline(always)]
+fn pack8(g:&[u8])->u8{
+    let x=u64::from_le_bytes([g[0],g[1],g[2],g[3],g[4],g[5],g[6],g[7]]);
+    const L:u64=0x7f7f7f7f7f7f7f7f;
+    let m=!x;let t=!(((m&L)+L)|m|L);
+    ((t>>7).wrapping_mul(0x8040201008040201)>>56) as u8
+}
+
 // Presentation-only byte expansion, in the same unverified adapter boundary
 // as palette selection and the former scalar packed-pixel conversion.
 fn packed_rgba_row(data:&[u8],start:usize,n:usize,bits:usize,table:&[[u8;32];256],reverse:bool,out:&mut[u8]){
     let per=8/bits;let mut x=0;
     if !reverse{
         while x<n&&(start+x)%per!=0{let p=start+x;let j=p%per*4;out[x*4..x*4+4].copy_from_slice(&table[data[p/per] as usize][j..j+4]);x+=1;}
-        while n-x>=per{let p=start+x;out[x*4..(x+per)*4].copy_from_slice(&table[data[p/per] as usize][..per*4]);x+=per;}
+        // Whole source bytes expand to fixed-size table rows; no per-byte division.
+        let whole=(n-x)/per*per;let (first,dst)=((start+x)/per,&mut out[x*4..(x+whole)*4]);
+        match per{8=>packed_run::<32>(data,first,table,dst),4=>packed_run::<16>(data,first,table,dst),
+            2=>packed_run::<8>(data,first,table,dst),_=>packed_run::<4>(data,first,table,dst)}
+        x+=whole;
     }
     while x<n{let p=start+x;let j=p%per*4;let to=if reverse{n-1-x}else{x}*4;out[to..to+4].copy_from_slice(&table[data[p/per] as usize][j..j+4]);x+=1;}
+}
+fn packed_run<const N:usize>(data:&[u8],first:usize,table:&[[u8;32];256],out:&mut[u8]){
+    let bytes=&data[first..first+out.len()/N];
+    for (chunk,b) in out.chunks_exact_mut(N).zip(bytes){chunk.copy_from_slice(&table[*b as usize][..N]);}
 }
 fn rgba_row(raw:&[u8],n:usize,ch:usize,bits:usize,rgb:bool,invert:bool,alpha:Option<(usize,u16)>,reverse:bool,out:&mut[u8])->R<()>{
     use verified_tiff::native_rgba::row;
     let le=cfg!(target_endian="little");let a=alpha.map_or(ch,|(a,_)|a);let premul=rgb&&alpha.is_some_and(|(_,kind)|kind==2);
     // Constant layout arguments specialize the hot loops; unusual extra-channel
     // layouts use the same proved kernel with a dynamic stride.
-    let r=match (bits,ch,rgb,invert,a){
-        (8,3,true,false,3)=>row(raw,n,3,false,true,false,3,false,le,reverse,out),
-        (8,4,true,false,3)=>row(raw,n,4,false,true,false,3,premul,le,reverse,out),
-        (8,1,false,false,1)=>row(raw,n,1,false,false,false,1,false,le,reverse,out),
-        (8,1,false,true,1)=>row(raw,n,1,false,false,true,1,false,le,reverse,out),
-        (16,3,true,false,3)=>row(raw,n,3,true,true,false,3,false,le,reverse,out),
-        (16,1,false,false,1)=>row(raw,n,1,true,false,false,1,false,le,reverse,out),
+    let r=match (bits,ch,rgb,invert,a,reverse){
+        (8,3,true,false,3,false)=>row(raw,n,3,false,true,false,3,false,le,false,out),
+        (8,4,true,false,3,false)=>row(raw,n,4,false,true,false,3,premul,le,false,out),
+        (8,1,false,false,1,false)=>row(raw,n,1,false,false,false,1,false,le,false,out),
+        (8,1,false,true,1,false)=>row(raw,n,1,false,false,true,1,false,le,false,out),
+        (16,3,true,false,3,false)=>row(raw,n,3,true,true,false,3,false,le,false,out),
+        (16,1,false,false,1,false)=>row(raw,n,1,true,false,false,1,false,le,false,out),
         _=>row(raw,n,ch,bits==16,rgb,invert,a,premul,le,reverse,out),
     };r.map_err(err)
 }
