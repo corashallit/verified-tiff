@@ -83,9 +83,9 @@ int main(int argc,char **argv){
     TIFFClose(t);TIFFOpenOptionsFree(o);
     for(const char **m=(const char *[]){"r","rb","rc","rC","rm","rM","rD","rO","rB",NULL};*m;m++){t=TIFFOpen(path,*m);assert(t);TIFFClose(t);}
     t=TIFFOpen(path,"rh");assert(t && TIFFCurrentDirOffset(t)==0);uint32_t w=77;assert(!TIFFGetField(t,256,&w)&&w==77);
-    /* Like libtiff, a handle with no directory yet has one strip. */
-    assert(TIFFNumberOfStrips(t)==1);
-    assert(TIFFReadDirectory(t));assert(TIFFGetField(t,256,&w)&&w==7);TIFFClose(t);return 0;
+    /* Like libtiff, there is no current directory yet, and one strip. */
+    assert(TIFFCurrentDirectory(t)==(tdir_t)-1 && TIFFNumberOfStrips(t)==1);
+    assert(TIFFReadDirectory(t));assert(TIFFGetField(t,256,&w)&&w==7&&TIFFCurrentDirectory(t)==0);TIFFClose(t);return 0;
   }
   if(!strcmp(mode,"chop")){
     TIFF *t=TIFFOpen(path,"rc");assert(t && TIFFNumberOfStrips(t)==1);TIFFClose(t);

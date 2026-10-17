@@ -93,7 +93,9 @@ impl Handle{
         let (data,meta)=if writing||flags&2!=0{empty_metadata(&source.mem,header)?}else{metadata(&mut source,header,header.first_ifd,&limits,chop)?};
         let converted=Buf::new(0,&source.mem)?;
         let mut chain=Buf::new(1,&source.mem)?;if meta.off!=0{chain.push(meta.off)?;}
-        Ok(Self{writing,converted,directory_kind:0,source,header,data,meta,page:0,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop})
+        // Like libtiff, a header-only open has no current directory yet.
+        let page=if !writing&&flags&2!=0{u32::MAX}else{0};
+        Ok(Self{writing,converted,directory_kind:0,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop})
     }
     fn set_offset(&mut self,off:u64,page:u32)->R<()>{
         let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop)?;
