@@ -82,7 +82,10 @@ int main(int argc,char **argv){
     int found=0;for(int i=0;i<TIFFGetTagListCount(t);i++)found+=TIFFGetTagListEntry(t,i)==TIFFTAG_ICCPROFILE;assert(found==1);
     TIFFClose(t);TIFFOpenOptionsFree(o);
     for(const char **m=(const char *[]){"r","rb","rc","rC","rm","rM","rD","rO","rB",NULL};*m;m++){t=TIFFOpen(path,*m);assert(t);TIFFClose(t);}
-    t=TIFFOpen(path,"rh");assert(t && TIFFCurrentDirOffset(t)==0);uint32_t w=77;assert(!TIFFGetField(t,256,&w)&&w==77);assert(TIFFReadDirectory(t));assert(TIFFGetField(t,256,&w)&&w==7);TIFFClose(t);return 0;
+    t=TIFFOpen(path,"rh");assert(t && TIFFCurrentDirOffset(t)==0);uint32_t w=77;assert(!TIFFGetField(t,256,&w)&&w==77);
+    /* Like libtiff, there is no current directory yet, and one strip. */
+    assert(TIFFCurrentDirectory(t)==(tdir_t)-1 && TIFFNumberOfStrips(t)==1);
+    assert(TIFFReadDirectory(t));assert(TIFFGetField(t,256,&w)&&w==7&&TIFFCurrentDirectory(t)==0);TIFFClose(t);return 0;
   }
   if(!strcmp(mode,"chop")){
     TIFF *t=TIFFOpen(path,"rc");assert(t && TIFFNumberOfStrips(t)==1);TIFFClose(t);
@@ -93,11 +96,11 @@ int main(int argc,char **argv){
   if(!strcmp(mode,"subifd")){
     assert(TIFFIsBigTIFF(t)==atoi(argv[3]));assert(TIFFNumberOfDirectories(t)==1);uint16_t n;uint64_t *offs;
     assert(TIFFGetField(t,TIFFTAG_SUBIFD,&n,&offs)&&n==1);uint64_t child=offs[0];
-    assert(TIFFSetSubDirectory(t,child));uint32_t w;assert(TIFFGetField(t,256,&w)&&w==3);unsigned char row[16];assert(TIFFReadScanline(t,row,0,0)==1);
+    assert(TIFFSetSubDirectory(t,child)&&TIFFCurrentDirectory(t)==0);uint32_t w;assert(TIFFGetField(t,256,&w)&&w==3);unsigned char row[16];assert(TIFFReadScanline(t,row,0,0)==1);
     assert(!TIFFSetSubDirectory(t,UINT64_MAX));assert(TIFFCurrentDirOffset(t)==child);assert(TIFFGetField(t,256,&w)&&w==3);
     assert(TIFFSetDirectory(t,0));assert(TIFFGetField(t,256,&w)&&w==7);
   }else if(!strcmp(mode,"cycle")){
-    assert(TIFFNumberOfDirectories(t)==0 && errno==ELOOP);uint64_t off=TIFFCurrentDirOffset(t);
+    assert(TIFFNumberOfDirectories(t)==1);uint64_t off=TIFFCurrentDirOffset(t);
     assert(!TIFFSetDirectory(t,2));assert(TIFFCurrentDirOffset(t)==off);
     assert(!TIFFReadDirectory(t) && errno==ELOOP);
   }else assert(0);

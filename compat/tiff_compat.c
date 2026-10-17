@@ -262,6 +262,7 @@ static uint32_t modeflags(const char *mode) {
     if (*p=='C') flags|=1;
     if (*p=='c') flags&=~1u;
     if (*p=='h') flags|=2;
+    if (*p=='D'||*p=='O') flags|=32; /* deferred strile loading */
   }
   if(*mode=='w'){flags=4;if(strchr(mode,'8'))flags|=8;if(strchr(mode,'b'))flags|=16;}
   return flags;
@@ -391,7 +392,8 @@ TIFF *TIFFClientOpenExt(const char *name, const char *mode, thandle_t client,
     destroy(t);
     return NULL;
   }
-  uint64_t n = size(client);
+  /* Like libtiff, a writer never asks for the size of its new output. */
+  uint64_t n = t->flags & 4 ? 0 : size(client);
   if (n > t->options.input || n > PTRDIFF_MAX) {
     fail(t, EFBIG, __func__, "input limit");
     destroy(t);
@@ -571,10 +573,12 @@ static int getfield(TIFF *t, uint32_t tag, va_list ap, int def) {
     return 1;
   }
   case TIFFTAG_EXTRASAMPLES: {
+    /* Extra samples implied by the photometric are only defaulted. */
+    uint16_t kind = 0;
     size_t n = 0;
-    const void *p = vt_array(t->state, tag, &n);
-    if (!n && !def)
+    if (!def && !vt_field(t->state, tag, &kind, &n))
       return 0;
+    const void *p = vt_array(t->state, tag, &n);
     uint16_t *count = va_arg(ap, uint16_t *);
     uint16_t **out = va_arg(ap, uint16_t **);
     if (!count || !out)
@@ -585,8 +589,12 @@ static int getfield(TIFF *t, uint32_t tag, va_list ap, int def) {
   }
   case TIFFTAG_COLORMAP: {
     size_t n = 0;
+    uint16_t bits = 1;
     const uint16_t *p = vt_array(t->state, tag, &n);
-    if (!p || !n)
+    TIFFGetFieldDefaulted(t, TIFFTAG_BITSPERSAMPLE, &bits);
+    /* Callers index each channel by sample value, so like libtiff expose
+       only a map with exactly 1 << BitsPerSample entries per channel. */
+    if (!p || bits > 16 || n != (size_t)3 << bits)
       return 0;
     uint16_t **r = va_arg(ap, uint16_t **), **g = va_arg(ap, uint16_t **),
              **b = va_arg(ap, uint16_t **);
@@ -735,10 +743,7 @@ static uint64_t size64(TIFF *t, unsigned kind, uint32_t rows) {
 }
 uint64_t TIFFScanlineSize64(TIFF *t) { return size64(t, 0, 1); }
 tmsize_t TIFFScanlineSize(TIFF *t) { return (tmsize_t)TIFFScanlineSize64(t); }
-uint64_t TIFFRasterScanlineSize64(TIFF *t) {
-  uint64_t n = TIFFScanlineSize64(t);
-  return info(t, 11) == 2 ? n * info(t, 12) : n;
-}
+uint64_t TIFFRasterScanlineSize64(TIFF *t) { return size64(t, 4, 1); }
 tmsize_t TIFFRasterScanlineSize(TIFF *t) {
   return (tmsize_t)TIFFRasterScanlineSize64(t);
 }
@@ -756,7 +761,18 @@ uint64_t TIFFVTileSize64(TIFF *t, uint32_t n) { return size64(t, 3, n); }
 tmsize_t TIFFVTileSize(TIFF *t, uint32_t n) {
   return (tmsize_t)TIFFVTileSize64(t, n);
 }
-uint32_t TIFFNumberOfStrips(TIFF *t) { return (uint32_t)info(t, 7); }
+uint32_t TIFFNumberOfStrips(TIFF *t) {
+  if (!valid(t, __func__))
+    return 0;
+  if (!TIFFIsTiled(t) && info(t, 0))
+    return (uint32_t)info(t, 7);
+  /* Like libtiff, a tiled image, or a handle with no directory yet, has the
+     strips its RowsPerStrip implies. */
+  uint64_t rows = info(t, 10), h = info(t, 1);
+  uint64_t n = rows == 0 || rows >= h ? 1 : (h - 1) / rows + 1;
+  n = info(t, 11) == 2 ? n * info(t, 12) : n;
+  return n > UINT32_MAX ? 0 : (uint32_t)n;
+}
 uint32_t TIFFNumberOfTiles(TIFF *t) { return (uint32_t)info(t, 7); }
 static uint64_t strile(TIFF *t, uint32_t index, int counts, int *error) {
   if (error)
@@ -797,8 +813,10 @@ tmsize_t TIFFRawStripSize(TIFF *t, uint32_t k) {
 int TIFFCheckTile(TIFF *t, uint32_t x, uint32_t y, uint32_t z, uint16_t s) {
   if (!valid(t, __func__))
     return 0;
-  if (!TIFFIsTiled(t) || x >= info(t, 0) || y >= info(t, 1) || z != 0 ||
-      (info(t, 11) == 2 ? s >= info(t, 12) : s != 0)) {
+  /* Like libtiff, a strip image's tiles are its strips, and a contiguous
+   * image ignores the sample. */
+  if (x >= info(t, 0) || y >= info(t, 1) || z != 0 ||
+      (info(t, 11) == 2 && s >= info(t, 12))) {
     fail(t, EINVAL, __func__, "invalid tile coordinates/plane");
     return 0;
   }
@@ -816,13 +834,15 @@ uint32_t TIFFComputeTile(TIFF *t, uint32_t x, uint32_t y, uint32_t z,
 uint32_t TIFFComputeStrip(TIFF *t, uint32_t row, uint16_t s) {
   if (!valid(t, __func__))
     return UINT32_MAX;
-  if (TIFFIsTiled(t) || row >= info(t, 1) ||
-      (info(t, 11) == 2 ? s >= info(t, 12) : s != 0)) {
+  if (row >= info(t, 1) || (info(t, 11) == 2 && s >= info(t, 12))) {
     fail(t, EINVAL, __func__, "invalid strip row/plane");
     return UINT32_MAX;
   }
-  uint64_t per = (info(t, 1) - 1) / info(t, 9) + 1;
-  return (uint32_t)(row / info(t, 9) + (info(t, 11) == 2 ? s * per : 0));
+  /* Like libtiff, a tiled image's strips follow RowsPerStrip, and planes are
+   * a plane's strips or tiles apart. */
+  uint64_t rows = TIFFIsTiled(t) ? info(t, 10) : info(t, 9);
+  uint64_t per = info(t, 7) / (info(t, 11) == 2 ? info(t, 12) : 1);
+  return (uint32_t)(row / rows + (info(t, 11) == 2 ? s * per : 0));
 }
 static tmsize_t read_bytes(TIFF *t, unsigned kind, uint32_t a, uint32_t b,
                            void *buf, tmsize_t size) {
@@ -974,10 +994,15 @@ int TIFFRGBAImageBegin(TIFFRGBAImage *img, TIFF *t, int stop,
   img->get = TIFFRGBAImageGet;
   TIFFGetFieldDefaulted(t, 258, &img->bitspersample);
   TIFFGetFieldDefaulted(t, 277, &img->samplesperpixel);
-  TIFFGetField(t, 262, &img->photometric);
+  /* Without the tag, libtiff guesses RGB or grayscale from the samples. */
+  if (!TIFFGetField(t, 262, &img->photometric))
+    img->photometric = (uint16_t)info(t, 16);
   uint16_t count = 0, *extra = NULL;
-  if (TIFFGetField(t, TIFFTAG_EXTRASAMPLES, &count, &extra) && count)
-    img->alpha = extra[0];
+  /* An unspecified first extra sample beyond three is associated alpha. */
+  TIFFGetFieldDefaulted(t, TIFFTAG_EXTRASAMPLES, &count, &extra);
+  if (count)
+    img->alpha = extra[0] ? extra[0]
+                 : img->samplesperpixel > 3 ? EXTRASAMPLE_ASSOCALPHA : 0;
   if (img->photometric == PHOTOMETRIC_PALETTE)
     TIFFGetField(t, TIFFTAG_COLORMAP, &img->redcmap, &img->greencmap,
                  &img->bluecmap);
@@ -1001,7 +1026,7 @@ int TIFFRGBAImageGet(TIFFRGBAImage *img, uint32_t *out, uint32_t w,
   uint64_t skip=(uint64_t)(h-rows)*w;
   if(skip>PTRDIFF_MAX/sizeof(*out)){fail(img->tif,EFBIG,__func__,"RGBA raster overflow");return 0;}
   size_t n=0; const uint8_t *p=vt_region(img->tif->state,(uint32_t)img->col_offset,
-      (uint32_t)img->row_offset,w,rows,img->req_orientation,&n);
+      (uint32_t)img->row_offset,w,rows,img->orientation,img->req_orientation,&n);
   if (!p) {bridge_fail(img->tif,__func__); return 0;}
   size_t offset=(size_t)skip*sizeof(*out);
   if(n>SIZE_MAX-offset||!vt_commit((uint8_t*)out,offset+n,offset,p,n)){bridge_fail(img->tif,__func__);return 0;}return 1;

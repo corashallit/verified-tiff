@@ -28,10 +28,13 @@ acceptance proofs. Preserve the missing-EOL and duplicate-endpoint policies in
    selection, SGILog row/plane framing and native LogLuv encoding, float64 bit preservation and per-channel/row/tile prediction resets. The proof checks the model, so specification
    review remains essential. Compare disagreements with libtiff against the
    standard instead of automatically copying libtiff's behavior.
-2. **Improve fuzzing.** The supplied deterministic mutation target is a smoke
-   test, not a coverage-guided campaign. Add an instrumented libFuzzer target
-   for inspection/decode and another for differential decoding within the
-   supported profile. Preserve minimized regressions as fixtures. Assert
+2. **Improve fuzzing.** `scripts/fuzz-capi.sh` runs a coverage-guided
+   libFuzzer target over the public C API, with ASan on the C shim and the Rust
+   adapter. `VTIFF_FUZZ_TARGET=capi_diff` also compares every result with the
+   pinned libtiff where both succeed. Keep minimized C API regressions in
+   `fuzz/capi/regressions`. The core's deterministic mutation target is still
+   only a smoke test: add an instrumented target for Rust inspection/decode and
+   another for differential decoding within the supported profile. Assert
    resource bounds and output framing as well as absence of crashes.
 3. **Continue measured optimization.** See `rgba-optimization.md` for the latest
    controlled results. Word-based LZW/Deflate reads, exact JPEG transform
@@ -69,6 +72,23 @@ acceptance proofs. Preserve the missing-EOL and duplicate-endpoint policies in
    specification, not an implicit addition to a compression tag. Do not
    import unsafe codec implementations under a "verified"
    claim.
+5. **Close the C API gaps the differential target still reports.** Strip and
+   tile offset tags are not aliased, and TileOffsets rather than the tile
+   dimensions decide whether an image is tiled. The derived Matteing/DataType
+   tags are missing. Before `JPEGCOLORMODE_RGB`, JPEG and OJPEG YCbCr sizes
+   are for upsampled RGB, where libtiff reports native subsampled sizes.
+   libtiff's OJPEG codec also rewrites YCbCrSubsampling and
+   JPEGInterchangeFormat from the stream and assumes YCbCr for a missing or
+   RGB photometric; the shim reads the tags as stored. Predictor reads back on
+   uncompressed images. `TIFFSetField` on a reader frees every tag pointer
+   handed out earlier. Default limits (256 MiB RGBA staging, 1024 directories,
+   64 samples per pixel) reject large files libtiff opens. RGBA conversion of
+   separate YCbCr planes and of palette images with extra samples is
+   unsupported where libtiff draws them. libtiff 4.7.1 is not a reference for
+   cropped RGBA reads of non-8-bit or Gray+A data, separate MinIsWhite RGBA
+   planes, row padding bits, backward scanline reads after failed partial
+   strip reads, Group 3 strips decoded after one without an EOL, or strip
+   counts of images of 2^31 rows or more; see `fuzz/capi/diff.c`.
 
 Use `bash scripts/verify.sh` as the proof gate. Ordinary `cargo test` is not a
 substitute. Changes to the core must verify the whole crate, continue rejecting

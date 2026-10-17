@@ -7,6 +7,7 @@
   "verus_commit": "426d8b01e7ffb910a36c15e1f870ff985bb61eef",
   "verus_sha256": "624018662868563a7bec0dd07be5e4dd0c3d61124b4b55105765884bf2d4d1a0",
   "vstd": "0.0.0-2026-10-04-0306",
+  "fuzz_rust": "nightly-2026-10-01",
   "z3": "4.16.0",
   "libtiff": "4.7.1",
   "libtiff_sha256": "f698d94f3103da8ca7438d84e0344e453fe0ba3b7486e04c5bf7a9a3fabe9b69",

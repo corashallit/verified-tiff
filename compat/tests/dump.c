@@ -96,6 +96,79 @@ int main(int argc, char **argv) {
         assert(fwrite(p, 1, n, f) == n);
       }
     free(p);
+  } else if (!strcmp(argv[2], "tag65000")) {
+    /* An unknown tag reads back with a 32-bit count and a data pointer. */
+    uint32_t n = 0;
+    const uint8_t *d = NULL;
+    const TIFFField *field = TIFFFieldWithTag(t, 65000);
+    int ok = TIFFGetField(t, 65000, &n, &d);
+    fprintf(f, "%d %u %d", ok, n, d == NULL);
+    for (size_t i = 0; ok == 1 && i < (size_t)n * TIFFFieldSetGetSize(field); i++)
+      fprintf(f, " %02x", d[i]);
+    fputc('\n', f);
+  } else if (!strcmp(argv[2], "extras")) {
+    /* ExtraSamples as read, and the RGBA reader's alpha and photometric. */
+    uint16_t n = 0, *v = NULL, p = 0;
+    TIFFRGBAImage img;
+    char message[1024];
+    int ok = TIFFGetField(t, TIFFTAG_EXTRASAMPLES, &n, &v);
+    fprintf(f, "%d %d:", ok, TIFFGetField(t, TIFFTAG_PHOTOMETRIC, &p));
+    for (uint16_t i = 0; ok && i < n; i++)
+      fprintf(f, " %u", v[i]);
+    if (TIFFRGBAImageBegin(&img, t, 0, message)) {
+      fprintf(f, " | %u %u", img.alpha, img.photometric);
+      TIFFRGBAImageEnd(&img);
+    }
+    fputc('\n', f);
+  } else if (!strcmp(argv[2], "counts")) {
+    /* Segment byte counts as read, then with deferred and on-demand strile
+     * loading. */
+    for (int pass = 0; pass < 3; pass++) {
+      TIFF *d = pass ? TIFFOpen(argv[1], pass == 1 ? "rD" : "rO") : t;
+      assert(d);
+      uint32_t n = TIFFIsTiled(d) ? TIFFNumberOfTiles(d) : TIFFNumberOfStrips(d);
+      for (uint32_t i = 0; i < n; i++)
+        fprintf(f, " %llu", (unsigned long long)TIFFGetStrileByteCount(d, i));
+      fputc('\n', f);
+      if (pass)
+        TIFFClose(d);
+    }
+  } else if (!strcmp(argv[2], "reals")) {
+    /* Float array fields, exactly. */
+    static const struct { uint32_t tag; int n; } arrays[] = {
+        {TIFFTAG_WHITEPOINT, 2}, {TIFFTAG_PRIMARYCHROMATICITIES, 6},
+        {TIFFTAG_YCBCRCOEFFICIENTS, 3}, {TIFFTAG_REFERENCEBLACKWHITE, 6}};
+    for (size_t i = 0; i < sizeof arrays / sizeof arrays[0]; i++) {
+      float *v = NULL;
+      int ok = TIFFGetField(t, arrays[i].tag, &v);
+      fprintf(f, "%u %d:", arrays[i].tag, ok);
+      for (int k = 0; ok && k < arrays[i].n; k++)
+        fprintf(f, " %a", v[k]);
+      fputc('\n', f);
+    }
+  } else if (!strcmp(argv[2], "layout")) {
+    /* RowsPerStrip as set and defaulted, then strip and tile indexes. */
+    uint32_t rows = 0, fallback = 0;
+    int set = TIFFGetField(t, TIFFTAG_ROWSPERSTRIP, &rows);
+    TIFFGetFieldDefaulted(t, TIFFTAG_ROWSPERSTRIP, &fallback);
+    fprintf(f, "%d %u %u |", set, rows, fallback);
+    for (uint16_t s = 0; s < 2 && (s < ch || planar == 1); s++) {
+      fprintf(f, " %u %u", TIFFComputeStrip(t, 0, s), TIFFComputeStrip(t, h - 1, s));
+      fprintf(f, " %d %u", TIFFCheckTile(t, w - 1, h - 1, 0, s),
+              TIFFComputeTile(t, w - 1, h - 1, 0, s));
+    }
+    fputc('\n', f);
+  } else if (!strcmp(argv[2], "sizes")) {
+    /* Strip queries are defined for tiled images, and tile queries for
+     * strip images. */
+    fprintf(f, "%u %llu %llu %llu %u %llu %llu %llu %llu\n",
+            TIFFNumberOfStrips(t), (unsigned long long)TIFFStripSize64(t),
+            (unsigned long long)TIFFVStripSize64(t, 1),
+            (unsigned long long)TIFFScanlineSize64(t), TIFFNumberOfTiles(t),
+            (unsigned long long)TIFFRasterScanlineSize64(t),
+            (unsigned long long)TIFFTileRowSize64(t),
+            (unsigned long long)TIFFTileSize64(t),
+            (unsigned long long)TIFFVTileSize64(t, 1));
   } else if (scan) {
     tmsize_t n = TIFFScanlineSize(t);
     if (n <= 0 || n > 67108864) {

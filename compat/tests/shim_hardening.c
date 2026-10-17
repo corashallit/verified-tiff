@@ -79,8 +79,8 @@ const uint8_t *__real_vt_read_size(void*,uint32_t,uint32_t,uint32_t,size_t,size_
 const uint8_t *__wrap_vt_read_size(void*p,uint32_t k,uint32_t a,uint32_t b,size_t z,size_t*n){if(injecting("vt_read_size",0)){*n=fault_len;return fault_rc?scratch.bytes:NULL;}return __real_vt_read_size(p,k,a,b,z,n);}
 const uint8_t *__real_vt_read(void*,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,size_t*);
 const uint8_t *__wrap_vt_read(void*p,uint32_t k,uint32_t a,uint32_t b,uint32_t o,uint32_t z,size_t*n){if(injecting("vt_read",0)){*n=fault_len;return fault_rc?scratch.bytes:NULL;}return __real_vt_read(p,k,a,b,o,z,n);}
-const uint8_t *__real_vt_region(void*,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,size_t*);
-const uint8_t *__wrap_vt_region(void*p,uint32_t x,uint32_t y,uint32_t w,uint32_t h,uint32_t o,size_t*n){if(injecting("vt_region",0)){*n=fault_len;return fault_rc?scratch.bytes:NULL;}return __real_vt_region(p,x,y,w,h,o,n);}
+const uint8_t *__real_vt_region(void*,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,size_t*);
+const uint8_t *__wrap_vt_region(void*p,uint32_t x,uint32_t y,uint32_t w,uint32_t h,uint32_t s,uint32_t o,size_t*n){if(injecting("vt_region",0)){*n=fault_len;return fault_rc?scratch.bytes:NULL;}return __real_vt_region(p,x,y,w,h,s,o,n);}
 int __real_vt_commit(uint8_t*,size_t,size_t,const uint8_t*,size_t);
 int __wrap_vt_commit(uint8_t*d,size_t c,size_t a,const uint8_t*s,size_t n){return injecting("vt_commit",0)?fault_rc:__real_vt_commit(d,c,a,s,n);}
 int __real_vt_put(void*,uint32_t,uint16_t,size_t,const uint8_t*);
@@ -132,7 +132,7 @@ static void null_test(void){
  uint8_t b[64]={0};uint32_t rgba_buf[16]={0};char message[1024];uint64_t u;uint16_t v;
  assert(!TIFFGetField(NULL,256,&u));assert(!TIFFGetFieldDefaulted(NULL,256,&u));assert(!TIFFSetField(NULL,256,(uint32_t)1));
  assert(!TIFFIsBigEndian(NULL)&&!TIFFIsByteSwapped(NULL)&&!TIFFIsMSB2LSB(NULL)&&!TIFFIsUpSampled(NULL)&&!TIFFLastDirectory(NULL));
- assert(!TIFFNumberOfDirectories(NULL)&&!TIFFSetDirectory(NULL,0)&&!TIFFReadDirectory(NULL)&&!TIFFSetSubDirectory(NULL,0));
+ assert(!TIFFNumberOfDirectories(NULL)&&!TIFFNumberOfStrips(NULL)&&!TIFFSetDirectory(NULL,0)&&!TIFFReadDirectory(NULL)&&!TIFFSetSubDirectory(NULL,0));
  assert(!TIFFReadEXIFDirectory(NULL,0)&&!TIFFReadGPSDirectory(NULL,0));
  assert(!TIFFScanlineSize(NULL)&&!TIFFGetStrileOffset(NULL,0));assert(TIFFComputeTile(NULL,0,0,0,0)==UINT32_MAX&&TIFFComputeStrip(NULL,0,0)==UINT32_MAX);
  assert(TIFFReadScanline(NULL,b,0,0)==-1&&TIFFReadEncodedStrip(NULL,0,b,1)==-1&&TIFFReadEncodedTile(NULL,0,b,1)==-1&&TIFFReadRawStrip(NULL,0,b,1)==-1&&TIFFReadRawTile(NULL,0,b,1)==-1&&TIFFReadTile(NULL,b,0,0,0,0)==-1);
@@ -179,7 +179,7 @@ static void metadata_test(void){
 }
 static void basic_read_test(void){
  TIFF*t=gray();unsigned char b[16384];uint32_t r[4096];assert(TIFFRasterScanlineSize64(t)==TIFFScanlineSize64(t));assert(TIFFRasterScanlineSize(t)>0&&TIFFVStripSize(t,1)>0&&TIFFVStripSize64(t,1)>0);assert(TIFFRawStripSize(t,0)>0);
- assert(TIFFComputeStrip(t,UINT32_MAX,0)==UINT32_MAX&&TIFFComputeStrip(t,0,1)==UINT32_MAX);assert(TIFFReadRawTile(t,0,b,1)==-1);
+ assert(TIFFComputeStrip(t,UINT32_MAX,0)==UINT32_MAX&&TIFFComputeStrip(t,0,1)==0);assert(TIFFReadRawTile(t,0,b,1)==-1);
  assert(TIFFReadEncodedStrip(t,0,b,-2)==-1&&TIFFReadEncodedStrip(t,0,NULL,1)==-1);assert(!TIFFReadRGBAImage(t,1,1,NULL,0));
  TIFFRGBAImage img;char msg[1024];assert(!TIFFRGBAImageBegin(NULL,t,0,msg));assert(TIFFRGBAImageBegin(&img,t,0,msg));img.get=NULL;assert(!TIFFRGBAImageGet(&img,r,1,1));img.get=TIFFRGBAImageGet;img.put.any=(void*)1;assert(!TIFFRGBAImageGet(&img,r,1,1));img.put.any=NULL;img.row_offset=-1;assert(!TIFFRGBAImageGet(&img,r,1,1));img.row_offset=0;img.col_offset=-1;assert(!TIFFRGBAImageGet(&img,r,1,1));img.col_offset=0;assert(!TIFFRGBAImageGet(&img,NULL,1,1));img.row_offset=(int)img.height;assert(!TIFFRGBAImageGet(&img,r,1,1));TIFFRGBAImageEnd(&img);TIFFClose(t);
  t=TIFFOpen(tile_path,"rc");assert(t);assert(TIFFTileRowSize64(t)>0&&TIFFTileRowSize(t)>0&&TIFFVTileSize64(t,1)>0&&TIFFVTileSize(t,1)>0);assert(TIFFReadTile(t,b,0,0,0,0)>0);assert(TIFFCurrentTile(t)==0);assert(TIFFReadTile(t,b,0,0,1,0)==-1);assert(TIFFReadRawStrip(t,0,b,1)==-1);TIFFClose(t);
@@ -209,7 +209,7 @@ static void bridge_failures_test(void){
  inject("vt_real",-1);float x;assert(!TIFFGetField(t,TIFFTAG_XRESOLUTION,&x));clear_fault();inject("vt_real",1);assert(!TIFFGetField(t,TIFFTAG_XRESOLUTION,(float*)NULL));clear_fault();
  inject("vt_pair",-1);assert(!TIFFGetField(t,TIFFTAG_PAGENUMBER,&h,&h));clear_fault();inject("vt_pair",1);assert(!TIFFGetField(t,TIFFTAG_PAGENUMBER,NULL,&h)&&!TIFFGetField(t,TIFFTAG_PAGENUMBER,&h,NULL));clear_fault();
  inject("vt_field",1);fault_kind=TIFF_SHORT;fault_len=1;assert(!TIFFGetField(t,TIFFTAG_SOFTWARE,&a));assert(!TIFFGetField(t,TIFFTAG_ICCPROFILE,&u,&a));fault_kind=TIFF_ASCII;assert(!TIFFGetField(t,TIFFTAG_SOFTWARE,NULL));fault_kind=TIFF_BYTE;fault_len=(size_t)UINT32_MAX+1;assert(!TIFFGetField(t,TIFFTAG_ICCPROFILE,&u,&a));fault_len=1;assert(!TIFFGetField(t,TIFFTAG_ICCPROFILE,NULL,&a)&&!TIFFGetField(t,TIFFTAG_ICCPROFILE,&u,NULL));clear_fault();
- inject("vt_array",1);fault_len=1;assert(!TIFFGetField(t,TIFFTAG_STRIPOFFSETS,NULL));assert(!TIFFGetField(t,TIFFTAG_EXTRASAMPLES,NULL,&a));assert(!TIFFGetField(t,TIFFTAG_EXTRASAMPLES,&h,NULL));assert(!TIFFGetField(t,TIFFTAG_SUBIFD,NULL,&a));assert(!TIFFGetField(t,TIFFTAG_SUBIFD,&h,NULL));fault_len=65536;assert(!TIFFGetField(t,TIFFTAG_SUBIFD,&h,&a));clear_fault();
+ inject("vt_array",1);fault_len=1;assert(!TIFFGetField(t,TIFFTAG_STRIPOFFSETS,NULL));assert(!TIFFGetFieldDefaulted(t,TIFFTAG_EXTRASAMPLES,NULL,&a));assert(!TIFFGetFieldDefaulted(t,TIFFTAG_EXTRASAMPLES,&h,NULL));assert(!TIFFGetField(t,TIFFTAG_SUBIFD,NULL,&a));assert(!TIFFGetField(t,TIFFTAG_SUBIFD,&h,NULL));fault_len=65536;assert(!TIFFGetField(t,TIFFTAG_SUBIFD,&h,&a));clear_fault();
  TIFFClose(t);
 }
 static TIFFDisplay display_fixture(void){TIFFDisplay d={{{1,0,0},{0,1,0},{0,0,1}},100,200,300,255,255,255,0,0,0,1,1,1};return d;}
@@ -308,11 +308,16 @@ static void reader_misc_test(void){
  inject("vt_scalar",-1);assert(!TIFFFindCODEC(1)->init(t,1)&&!TIFFIsUpSampled(t));clear_fault();
  assert(!TIFFGetField(t,TIFFTAG_SUBIFD,&off,&off));inject("vt_real",0);assert(!TIFFGetField(t,TIFFTAG_XRESOLUTION,&off));clear_fault();
  inject("vt_array",0);assert(!TIFFGetField(t,TIFFTAG_COLORMAP,&off,&off,&off));fault_rc=1;fault_len=0;assert(!TIFFGetField(t,TIFFTAG_COLORMAP,&off,&off,&off));clear_fault();
+ /* Like libtiff, a ColorMap needs exactly 1 << BitsPerSample entries per channel. */
+ uint16_t *red=NULL,*green=NULL,*blue=NULL;inject("vt_array",1);fault_len=6;assert(!TIFFGetField(t,TIFFTAG_COLORMAP,&red,&green,&blue)&&!red);
+ fault_len=768;assert(TIFFGetField(t,TIFFTAG_COLORMAP,&red,&green,&blue)&&green==red+256&&blue==red+512);clear_fault();
+ TIFF*wide=TIFFOpen("tests/fixtures/float64-gray-be.tif","r");assert(wide);inject("vt_array",1);fault_len=6;assert(!TIFFGetField(wide,TIFFTAG_COLORMAP,&off,&off,&off));clear_fault();TIFFClose(wide);
+ TIFF*short_map=TIFFOpen("tests/fixtures/acceptance-deflate.tif","r");assert(short_map);assert(!TIFFGetField(short_map,TIFFTAG_COLORMAP,&red,&green,&blue));TIFFClose(short_map);
  assert(TIFFReadEncodedTile(t,0,bytes,0)==-1);assert(TIFFReadEncodedStrip(t,UINT32_MAX,bytes,0)==-1);inject("vt_read_size",1);fault_len=0;assert(TIFFReadEncodedStrip(t,0,bytes,1)==0);clear_fault();
  inject("vt_read",1);assert(!TIFFReadRGBAImage(t,UINT32_MAX,UINT32_MAX,pixels,0));fault_len=SIZE_MAX;assert(!TIFFReadRGBAImage(t,1,100,pixels,0));clear_fault();
  TIFFRGBAImage img;assert(TIFFRGBAImageOK(t,NULL)&&TIFFRGBAImageBegin(&img,t,0,NULL));TIFF *save=img.tif;img.tif=NULL;assert(!TIFFRGBAImageGet(&img,pixels,1,1));img.tif=save;assert(!TIFFRGBAImageGet(&img,pixels,UINT32_MAX,UINT32_MAX));inject("vt_region",1);fault_len=SIZE_MAX;assert(!TIFFRGBAImageGet(&img,pixels,1,100));clear_fault();
  assert(!TIFFReadFromUserBuffer(t,0,bytes,-1,bytes,1));assert(!TIFFReadFromUserBuffer(t,0,bytes,1,bytes,-1));assert(!TIFFReadFromUserBuffer(t,0,NULL,1,bytes,1));assert(!TIFFReadFromUserBuffer(t,0,bytes,1,NULL,1));(void)TIFFReadFromUserBuffer(t,0,NULL,0,NULL,0);
- TIFFClose(t);t=TIFFOpen(tile_path,"rc");assert(t);assert(TIFFIsByteSwapped(t));assert(TIFFComputeStrip(t,0,0)==UINT32_MAX);assert(!TIFFCheckTile(t,UINT32_MAX,0,0,0)&&!TIFFCheckTile(t,0,UINT32_MAX,0,0)&&!TIFFCheckTile(t,0,0,0,1));assert(TIFFReadEncodedStrip(t,0,bytes,0)==-1);TIFFClose(t);
+ TIFFClose(t);t=TIFFOpen(tile_path,"rc");assert(t);assert(TIFFIsByteSwapped(t));assert(TIFFComputeStrip(t,0,0)==0);assert(!TIFFCheckTile(t,UINT32_MAX,0,0,0)&&!TIFFCheckTile(t,0,UINT32_MAX,0,0)&&TIFFCheckTile(t,0,0,0,1));assert(TIFFReadEncodedStrip(t,0,bytes,0)==-1);TIFFClose(t);
  assert(!TIFFIsTiled(NULL));unknown_warnings(NULL);
 }
 static unsigned print_callbacks;
@@ -350,9 +355,10 @@ static void getter_defaults_test(void){
 }
 static int empty_extras(TIFF*t,uint32_t k,va_list a){if(k==TIFFTAG_EXTRASAMPLES){*va_arg(a,uint16_t*)=0;*va_arg(a,uint16_t**)=NULL;return 1;}return default_getfield(t,k,a);}
 static void final_branches_test(const char *planar){
- assert(!writemode(NULL));TIFF*t=gray();assert(TIFFFlush(t));assert(!TIFFCheckTile(t,0,0,0,0));uint8_t b[16384];assert(TIFFReadRawStrip(t,0,b,0)==0);
+ assert(!writemode(NULL));TIFF*t=gray();assert(TIFFFlush(t));assert(TIFFCheckTile(t,0,0,0,0)&&TIFFComputeTile(t,0,0,0,0)==0);uint8_t b[16384];assert(TIFFReadRawStrip(t,0,b,0)==0);
  float*p=NULL;assert(!TIFFGetFieldDefaulted(t,TIFFTAG_PRIMARYCHROMATICITIES,&p));
  TIFFRGBAImage img;t->methods.vgetfield=empty_extras;assert(TIFFRGBAImageBegin(&img,t,0,NULL)&&img.alpha==0);t->methods.vgetfield=default_getfield;
+ inject("vt_scalar",0);fault_tag=TIFFTAG_PHOTOMETRIC;assert(TIFFRGBAImageBegin(&img,t,0,NULL)&&img.photometric==PHOTOMETRIC_MINISBLACK);clear_fault();
  tmsize_t size=TIFFRawStripSize(t,0);assert(size>0);uint8_t*encoded=malloc((size_t)size);assert(encoded);assert(TIFFReadRawStrip(t,0,encoded,size)==size);assert(TIFFReadFromUserBuffer(t,0,encoded,size,NULL,0));inject("vt_commit",0);b[0]=0xa5;assert(!TIFFReadFromUserBuffer(t,0,encoded,size,b,1)&&b[0]==0xa5);clear_fault();free(encoded);TIFFClose(t);
  t=TIFFOpen("tests/fixtures/jpeg-ycbcr.tif","rc");assert(t);assert(TIFFSetField(t,TIFFTAG_JPEGCOLORMODE,0)&&!TIFFIsUpSampled(t));assert(TIFFSetField(t,TIFFTAG_JPEGCOLORMODE,1)&&TIFFIsUpSampled(t));inject("vt_scalar",-1);fault_tag=TIFFTAG_JPEGCOLORMODE;assert(!TIFFIsUpSampled(t));clear_fault();TIFFClose(t);
  t=TIFFOpen("tests/fixtures/logluv-pages.tif","rc");assert(t);TIFFSetTagExtender(broken_extender);assert(!TIFFReadDirectory(t));TIFFSetTagExtender(NULL);TIFFClose(t);

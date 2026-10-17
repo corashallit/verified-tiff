@@ -3,11 +3,22 @@ use super::*;
 use verified_tiff::{native_samples::read_word,adapter_meta as checked};
 pub struct Converted{key:u32,kind:u16,n:usize,data:Buf<u64>}
 fn signed(v:u64,w:usize)->i64{match w{1=>v as i8 as i64,2=>v as i16 as i64,4=>v as i32 as i64,_=>v as i64}}
-pub fn real(s:&[u8],at:usize,kind:u16,le:bool)->R<f64>{
+/// A real array element as libtiff's float (`single`) or double array reader
+/// converts it: a rational divides in that precision, its denominator is
+/// unsigned and a zero one reads as 0, and a double is clamped to the float
+/// range.
+pub fn real(s:&[u8],at:usize,kind:u16,le:bool,single:bool)->R<f64>{
     let w=container::field_size(kind);let v=read_word(s,at,if kind==5||kind==10{4}else{w},le).map_err(err)?;
+    let round=|x:f64|if single{x as f32 as f64}else{x};
     Ok(match kind{
-        5|10=>{let d=read_word(s,at+4,4,le).map_err(err)?;if d==0{return Err((INVALID,"zero rational denominator"));}if kind==10{(v as i32 as f64)/(d as i32 as f64)}else{v as f64/d as f64}},
-        11=>f32::from_bits(v as u32) as f64,12=>f64::from_bits(v),6|8|9|17=>signed(v,w) as f64,_=>v as f64})
+        5|10=>{
+            let d=read_word(s,at+4,4,le).map_err(err)? as f64;let n=if kind==10{v as u32 as i32 as f64}else{v as f64};
+            if d==0.{0.}else{round(round(n)/round(d))}
+        },
+        11=>f32::from_bits(v as u32) as f64,
+        12=>{let d=f64::from_bits(v);if single{d.clamp(-(f32::MAX as f64),f32::MAX as f64)}else{d}},
+        6|8|9|17=>{let i=signed(v,w);if single{i as f32 as f64}else{i as f64}},
+        _=>if single{v as f32 as f64}else{v as f64}})
 }
 impl Handle{
     pub fn put(&mut self,key:u16,kind:u16,count:usize,raw:&[u8])->R<()>{
@@ -33,7 +44,7 @@ impl Handle{
         let (data,meta)=if self.directory_kind!=0||self.writing{
             if self.directory_kind==0{normalize_inks(&mut data,&mut tags,self.meta.le,&self.limits)?;}
             let (_,mut m)=empty_metadata(&self.source.mem,self.header)?;m.tags=tags;m.off=self.meta.off;m.next=self.meta.next;(data,m)
-        }else{assemble(data,tags,self.meta.off,self.meta.next,self.meta.le,&self.limits,self.chop,&self.source.mem)?};
+        }else{assemble(data,tags,self.meta.off,self.meta.next,self.meta.le,&self.limits,self.chop,&self.source.mem,true,None)?};
         self.converted=Buf::new(0,&self.source.mem)?;self.data=data;self.meta=meta;self.stream=None;self.cache=None;self.rendered=None;Ok(())
     }
     fn typed(&mut self,key:u32,kind:u16)->R<Option<(*const u8,usize)>>{
@@ -48,7 +59,7 @@ impl Handle{
         let mut data=Buf::new(words,&self.source.mem)?;for _ in 0..words{data.push(0u64)?;}
         for i in 0..t.count{
             let at=t.at+product(i,sw)?;
-            let value=if matches!(kind,11|12){let v=real(&self.data,at,t.kind,self.meta.le)?;if kind==11{(v as f32).to_bits() as u64}else{v.to_bits()}}
+            let value=if matches!(kind,11|12){let v=real(&self.data,at,t.kind,self.meta.le,kind==11)?;if kind==11{(v as f32).to_bits() as u64}else{v.to_bits()}}
             else{
                 let v=read_word(&self.data,at,sw,self.meta.le).map_err(err)?;
                 checked::convert_integer(v,t.kind,kind).map_err(err)?
@@ -79,7 +90,7 @@ pub unsafe extern "C" fn vt_typed(p:*mut c_void,key:u32,kind:u16,out:*mut *const
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_custom_dir(p:*mut c_void,off:u64,kind:u32)->i32{
-    guard(0,||{let h=handle(p)?;let (data,tags,next)=raw_metadata(&mut h.source,h.header,off,&h.limits,false)?;
+    guard(0,||{let h=handle(p)?;let (data,tags,next,_)=raw_metadata(&mut h.source,h.header,off,&h.limits,false)?;
         let (_,mut meta)=empty_metadata(&h.source.mem,h.header)?;meta.tags=tags;meta.off=off;meta.next=next;
         let converted=Buf::new(0,&h.source.mem)?;
         h.converted=converted;h.meta=meta;h.data=data;h.page=u32::MAX;h.directory_kind=kind;h.stream=None;h.cache=None;h.rendered=None;Ok(1)})

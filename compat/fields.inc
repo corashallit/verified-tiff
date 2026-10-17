@@ -157,7 +157,8 @@ static int generic_getfield(TIFF *t,uint32_t tag,va_list ap,int def){
     uint32_t *c32=NULL;uint16_t *c16=NULL;
     if(plan==4)c32=va_arg(ap,uint32_t*);else c16=va_arg(ap,uint16_t*);
     void **out=va_arg(ap,void **);if((plan==4?!c32:!c16)||!out)return 0;
-    if(plan==4)*c32=(uint32_t)n;else *c16=(uint16_t)n;*out=(void*)data;
+    /* Like libtiff, a value with no elements has no data pointer. */
+    if(plan==4)*c32=(uint32_t)n;else *c16=(uint16_t)n;*out=n?(void*)data:NULL;
   }else if(plan==2){void **out=va_arg(ap,void **);if(!out)return 0;*out=(void*)data;}
   else{
 #define VT_SCALAR(T) do{T *out=va_arg(ap,T*);if(!out)return 0;memcpy(out,data,sizeof(T));}while(0)

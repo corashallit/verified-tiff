@@ -3,12 +3,14 @@
 use super::*;
 use verified_tiff::{adapter_geometry as geometry,adapter_color as color};
 impl Handle {
-    pub fn ycbcr_raw(&self)->bool{self.meta.photo==6&&!matches!(self.meta.compression,6|7)}
+    /// Like libtiff, only contiguous three-sample YCbCr is stored in
+    /// subsampled clumps; other layouts hold plain samples.
+    pub fn ycbcr_raw(&self)->bool{let m=&self.meta;m.photo==6&&m.planar==1&&m.ch==3&&!matches!(m.compression,6|7)}
     pub fn sampling(&self)->R<(usize,usize)>{
         let m=&self.meta;
         if m.bits!=8||m.ch!=3||m.planar!=1||m.predictor!=1{return Err((NOTIMPL,"YCbCr requires contiguous 8-bit samples without prediction"));}
-        let (h,v)=if let Some(t)=find(&m.tags,530){if t.count!=2{return Err((INVALID,"YCbCr subsampling count"));}(value(&self.data,t,0,m.le)? as usize,value(&self.data,t,1,m.le)? as usize)}else{(2,2)};
-        if !matches!(h,1|2|4)||!matches!(v,1|2|4){return Err((INVALID,"YCbCr subsampling"));}Ok((h,v))
+        let (h,v)=m.subsampling(&self.data)?;
+        if !matches!(h,1|2|4)||!matches!(v,1|2|4){return Err((INVALID,"YCbCr subsampling"));}Ok((h as usize,v as usize))
     }
     pub fn native_layout(&self,w:usize,h:usize)->R<(usize,usize)>{
         if self.ycbcr_raw(){let (hs,vs)=self.sampling()?;Ok((product((w-1)/hs+1,hs*vs+2)?,(h-1)/vs+1))}
@@ -16,13 +18,12 @@ impl Handle {
     }
     fn reals<const N:usize>(&self,key:u16,defaults:[f32;N])->R<[f32;N]>{
         let Some(t)=find(&self.meta.tags,key)else{return Ok(defaults);};if t.count!=N{return Err((INVALID,"color metadata count"));}
-        let mut a=defaults;for (i,v) in a.iter_mut().enumerate(){*v=metadata::real(&self.data,t.at+i*container::field_size(t.kind),t.kind,self.meta.le)? as f32;if !v.is_finite(){return Err((INVALID,"nonfinite color metadata"));}}Ok(a)
+        let mut a=defaults;for (i,v) in a.iter_mut().enumerate(){*v=metadata::real(&self.data,t.at+i*container::field_size(t.kind),t.kind,self.meta.le,true)? as f32;if !v.is_finite(){return Err((INVALID,"nonfinite color metadata"));}}Ok(a)
     }
-    pub fn rgba_color(&mut self,x:usize,y:usize,w:usize,h:usize,orientation:usize)->R<()>{
+    pub fn rgba_color(&mut self,x:usize,y:usize,w:usize,h:usize,source:usize,orientation:usize)->R<()>{
         if !(1..=8).contains(&orientation)||w==0||h==0{return Err((INVALID,"RGBA dimensions/orientation"));}
         let m=&self.meta;let width=m.width;let height=m.height;let bw=m.bw;let bh=m.bh;let bits=m.bits;let ch=m.ch;let planar=m.planar;let photo=m.photo;
-        let alpha=m.extra.iter().position(|v|*v==1||*v==2).map(|i|(ch-m.extra.len()+i,m.extra[i]));
-        let (fx,fy)=geometry::orientation(m.orientation,orientation).map_err(err)?;
+        let (fx,fy)=geometry::orientation(source,orientation).map_err(err)?;
         let right=x.checked_add(w).ok_or((LIMIT,"RGBA extent"))?.min(width);let bottom=y.checked_add(h).ok_or((LIMIT,"RGBA extent"))?.min(height);
         if x>=right||y>=bottom{return Err((INVALID,"empty RGBA region"));}
         let across=(width-1)/bw+1;let row=m.row_bytes(bw)?;
@@ -73,9 +74,8 @@ impl Handle {
                     // Contiguous 8-bit CMYK/Lab pixels: the same conversions, read in place.
                     let src=&data[(left-bx*bw)*ch..(rr-bx*bw)*ch];
                     for (i,p) in src.chunks_exact(ch).enumerate(){
-                        let mut q=if photo==5{color::cmyk(p[0] as u16,p[1] as u16,p[2] as u16,p[3] as u16,false)}
+                        let q=if photo==5{color::cmyk(p[0] as u16,p[1] as u16,p[2] as u16,p[3] as u16,false)}
                             else{lab(p[0] as u16,p[1] as u16,p[2] as u16,bits,reference,&gamma)};
-                        if let Some((a,kind))=alpha{q[3]=p[a];if kind==2{for c in 0..3{q[c]=((q[c] as u32*q[3] as u32+127)/255) as u8;}}}
                         let to=geometry::span_pixel(w,h,right-x,bottom-y,left-x,yy-y,n,fx,fy,i);
                         decoder::pack(&mut span[to..to+4],q);
                     }
@@ -86,13 +86,12 @@ impl Handle {
                 let component=|c:usize|->u16{
                     if let Some(data)=data{let p=(lx*ch+c)*(bits/8);if bits==8{data[p] as u16}else{u16::from_ne_bytes([data[p],data[p+1]])}}else{words[off+c]}
                 };
-                let mut q=if photo==6{
+                let q=if photo==6{
                     let at=(lx/hs)*(hs*vs+2);let data=band.as_ref().unwrap();
                     ycbcr(data[at+(ly%vs)*hs+lx%hs],data[at+hs*vs],data[at+hs*vs+1],luma,rbw)
                 }else if photo==5{
                     color::cmyk(component(0),component(1),component(2),component(3),bits==16)
                 }else{lab(component(0),component(1),component(2),bits,reference,&gamma)};
-                if let Some((a,kind))=alpha{q[3]=if bits==8{component(a) as u8}else{((component(a) as u32+128)/257) as u8};if kind==2{for c in 0..3{q[c]=((q[c] as u32*q[3] as u32+127)/255) as u8;}}}
                 let to=geometry::span_pixel(w,h,right-x,bottom-y,left-x,yy-y,n,fx,fy,i);
                 decoder::pack(&mut span[to..to+4],q);
             }}

@@ -61,6 +61,7 @@ fn product(a: usize, b: usize) -> R<usize> {
 }
 mod storage;
 mod stream;
+mod field_tags;
 mod directory;
 mod decoder;
 mod lerc;
@@ -76,12 +77,14 @@ struct Tag{key:u16,kind:u16,count:usize,at:usize,remote:Option<u64>}
 struct Meta{
     tags:Buf<Tag>,off:u64,next:u64,le:bool,width:usize,height:usize,ch:usize,bits:usize,
     format:u16,photo:u64,planar:usize,rows:usize,bw:usize,bh:usize,tiled:bool,
+    // libtiff's tile length for strip images, and whether RowsPerStrip is set.
+    tile_rows:usize,rows_set:bool,
     offsets:Striles,counts:Striles,map:Buf<u16>,extra:Buf<u16>,subifds:Buf<u64>,
     compression:u16,predictor:u16,orientation:usize,fill:u16,
 }
 struct Handle{
     source:Source,header:container::Header,data:Buf<u8>,meta:Meta,page:u32,limits:Limits,
-    work:usize,chain_steps:usize,stream:Option<stream::Cached>,cache:Option<(usize,Buf<u8>)>,rendered:Option<Buf<u8>>,jpeg_rgb:bool,logluv16:bool,chop:bool,converted:Buf<metadata::Converted>,directory_kind:u32,writing:bool,
+    work:usize,chain_steps:usize,chain:Buf<u64>,stream:Option<stream::Cached>,cache:Option<(usize,Buf<u8>)>,rendered:Option<Buf<u8>>,jpeg_rgb:bool,logluv16:bool,chop:bool,deferred:bool,converted:Buf<metadata::Converted>,directory_kind:u32,writing:bool,
 }
 impl Handle{
     fn open(mut source:Source,output:usize,work:usize,flags:u32)->R<Self>{
@@ -89,25 +92,33 @@ impl Handle{
         let writing=flags&4!=0;
         let header=if writing{container::Header{little_endian:flags&16==0,big:flags&8!=0,first_ifd:0}}else{let b=source.read(0,source.len.min(16) as usize)?;container::header(&b).map_err(err)?};
         let limits=Limits{max_input:source.input,max_output:output,..Limits::conservative()};
-        let chop=flags&1!=0;
-        let (data,meta)=if writing||flags&2!=0{empty_metadata(&source.mem,header)?}else{metadata(&mut source,header,header.first_ifd,&limits,chop)?};
+        let chop=flags&1!=0;let deferred=flags&32!=0;
+        let (data,meta)=if writing||flags&2!=0{empty_metadata(&source.mem,header)?}else{metadata(&mut source,header,header.first_ifd,&limits,chop,deferred)?};
         let converted=Buf::new(0,&source.mem)?;
-        Ok(Self{writing,converted,directory_kind:0,source,header,data,meta,page:0,limits,work,chain_steps:0,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop})
+        let mut chain=Buf::new(1,&source.mem)?;if meta.off!=0{chain.push(meta.off)?;}
+        // Like libtiff, a header-only open has no current directory yet.
+        let page=if !writing&&flags&2!=0{u32::MAX}else{0};
+        Ok(Self{writing,converted,directory_kind:0,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
     }
     fn set_offset(&mut self,off:u64,page:u32)->R<()>{
-        let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop)?;
+        let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop,self.deferred)?;
         self.converted=Buf::new(0,&self.source.mem)?;self.directory_kind=0;self.data=data;self.meta=meta;self.page=page;self.chain_steps=0;self.stream=None;self.cache=None;self.rendered=None;self.jpeg_rgb=false;self.logluv16=false;Ok(())
     }
     fn source_channels(&self)->R<usize>{Ok(self.meta.ch)}
     fn raw_row(&self,w:usize)->R<usize>{
         if self.ycbcr_raw(){let (hs,vs)=self.sampling()?;return Ok(product((w-1)/hs+1,hs*vs+2)?/vs);}
-        if self.meta.photo==6 && !self.jpeg_rgb{return Err((NOTIMPL,"native subsampled YCbCr not implemented; request JPEGCOLORMODE_RGB"));}
+        if self.meta.photo==6 && matches!(self.meta.compression,6|7) && !self.jpeg_rgb{return Err((NOTIMPL,"native subsampled YCbCr not implemented; request JPEGCOLORMODE_RGB"));}
+        self.sample_row(w)
+    }
+    /// A row of whole samples, as libtiff's tile row and raster scanline
+    /// sizes count it, without YCbCr subsampling.
+    fn sample_row(&self,w:usize)->R<usize>{
         let row=self.meta.row_bytes(w)?;
         if self.meta.compression==34676 && self.meta.photo==32845 && !self.logluv16{product(row,2)}else{Ok(row)}
     }
 }
 fn empty_metadata(mem:&Mem,header:container::Header)->R<(Buf<u8>,Meta)>{
-    Ok((Buf::new(0,mem)?,Meta{tags:Buf::new(0,mem)?,off:0,next:header.first_ifd,le:header.little_endian,width:0,height:0,ch:1,bits:1,format:1,photo:1,planar:1,rows:0,bw:0,bh:0,tiled:false,offsets:Striles::empty(mem)?,counts:Striles::empty(mem)?,map:Buf::new(0,mem)?,extra:Buf::new(0,mem)?,subifds:Buf::new(0,mem)?,compression:1,predictor:1,orientation:1,fill:1}))
+    Ok((Buf::new(0,mem)?,Meta{tags:Buf::new(0,mem)?,off:0,next:header.first_ifd,le:header.little_endian,width:0,height:0,ch:1,bits:1,format:1,photo:1,planar:1,rows:0,bw:0,bh:0,tile_rows:0,rows_set:false,tiled:false,offsets:Striles::empty(mem)?,counts:Striles::empty(mem)?,map:Buf::new(0,mem)?,extra:Buf::new(0,mem)?,subifds:Buf::new(0,mem)?,compression:1,predictor:1,orientation:1,fill:1}))
 }
 // Safety: only the C shim can call these hidden exports. A live handle must
 // be exclusively accessed for the duration of a call; C owns its lifetime.
@@ -150,8 +161,9 @@ pub unsafe extern "C" fn vt_close(h: *mut c_void) {
 pub unsafe extern "C" fn vt_select(p: *mut c_void, page: u32) -> i32 {
     guard(0, || {
         let h = handle(p)?;
-        let off=page_offset(&mut h.source,h.header,Some(page),&h.limits)?.0;
-        h.set_offset(off,page)?;
+        let seen=page_offset(&mut h.source,h.header,Some(page),&h.limits)?;
+        let mut chain=Buf::new(seen.len(),&h.source.mem)?;chain.extend(&seen)?;drop(seen);
+        h.set_offset(chain[chain.len()-1],page)?;h.chain=chain;
         Ok(1)
     })
 }
@@ -181,9 +193,14 @@ pub unsafe extern "C" fn vt_scalar(p: *mut c_void, key: u32, defaulted: i32, out
             } else {
                 0
             }
-        } else if key==278 && m.rows>0 {m.rows as u64} else {
+        } else if key==278 && m.rows>0 {
+            if !m.rows_set && defaulted==0 {return Ok(0);}
+            m.rows as u64
+        } else {
             let Some(t) = find(&m.tags, key as u16) else {
-                if defaulted != 0 {
+                // libtiff's directory reader always sets these two.
+                let implied = !h.writing && h.directory_kind == 0 && matches!(key, 259 | 284);
+                if defaulted != 0 || implied {
                     if let Some(v) = def {
                         *out = v;
                         return Ok(1);
@@ -219,6 +236,7 @@ pub unsafe extern "C" fn vt_info(p: *mut c_void, key: u32) -> u64 {
             13 => h.limits.max_output as u64,
             14 => h.header.big as u64,
             15 => h.meta.tags.len() as u64,
+            16 => m.photo,
             _ => return Err((INVALID, "unknown adapter info")),
         })
     })
@@ -231,7 +249,7 @@ pub unsafe extern "C" fn vt_array(p: *mut c_void, key: u32, len: *mut usize) -> 
             return Err((INVALID, "null array length"));
         }
         let m = &mut h.meta;
-        if find(&m.tags,key as u16).is_none(){return Ok(ptr::null());}
+        if key!=338&&find(&m.tags,key as u16).is_none(){return Ok(ptr::null());}
         if matches!(key,273|324){m.offsets.materialize(&mut h.source)?;}
         if matches!(key,279|325){m.counts.materialize(&mut h.source)?;}
         let (at, n) = match key {
@@ -250,14 +268,20 @@ pub unsafe extern "C" fn vt_array(p: *mut c_void, key: u32, len: *mut usize) -> 
 pub unsafe extern "C" fn vt_count_dirs(p: *mut c_void) -> u32 {
     guard(0, || {
         let h = handle(p)?;
-        Ok(page_offset(&mut h.source,h.header,None,&h.limits)?.1)
+        Ok(page_offset(&mut h.source,h.header,None,&h.limits)?.len() as u32)
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_set_offset(p: *mut c_void, offset: u64) -> i32 {
     guard(0, || {
         let h = handle(p)?;
-        h.set_offset(offset,u32::MAX)?;
+        // Like libtiff, a main-chain directory keeps its number and loop
+        // history; any other directory starts a new chain as number 0.
+        let seen=page_offset(&mut h.source,h.header,None,&h.limits).ok();
+        let at=seen.as_ref().and_then(|s|s.iter().position(|o|*o==offset));
+        let mut chain=Buf::new(at.map_or(1,|i|i+1),&h.source.mem)?;
+        match (&seen,at){(Some(s),Some(i))=>chain.extend(&s[..=i])?,_=>chain.push(offset)?}
+        h.set_offset(offset,at.map_or(0,|i|i as u32))?;h.chain=chain;
         Ok(1)
     })
 }
@@ -267,25 +291,30 @@ pub unsafe extern "C" fn vt_size(p: *mut c_void, kind: u32, rows: u32) -> i64 {
         let h = handle(p)?;
         let m = &h.meta;
         if h.meta.width==0 {return Err((INVALID,"no selected image directory"));}
-        if kind > 3 {
+        if kind > 4 {
             return Err((INVALID, "invalid size operation"));
         }
-        if kind >= 2 && !m.tiled {
-            return Err((INVALID, "tile size requested for strip image"));
-        }
+        // Like libtiff, a strip image's tiles are its strips: image width by
+        // RowsPerStrip rows.
         let w = if kind == 2 || kind == 3 {
             m.bw
         } else {
             m.width
         };
-        let n = if kind == 0 || kind == 2 {
+        let n = if kind == 0 || kind == 2 || kind == 4 {
             1
         } else if rows == u32::MAX {
-            m.bh
+            // Like libtiff, a tiled image's strip spans RowsPerStrip rows.
+            if kind == 1 && m.tiled { m.rows.min(m.height) } else if kind == 3 && !m.tiled { m.tile_rows } else { m.bh }
         } else {
             rows as usize
         };
-        let size=if kind==1||kind==3{if n==0{0}else{let (row,rows)=h.native_layout(w,n)?;product(row,rows)?}}else{h.raw_row(w)?};
+        let size=match kind{
+            1|3=>if n==0{0}else{let (row,rows)=h.native_layout(w,n)?;product(row,rows)?},
+            2=>h.sample_row(w)?,
+            4=>product(h.sample_row(w)?,if m.planar==2{m.ch}else{1})?,
+            _=>h.raw_row(w)?,
+        };
         if size > i64::MAX as usize {
             return Err((LIMIT, "size overflow"));
         }
@@ -327,9 +356,11 @@ pub unsafe extern "C" fn vt_read(p:*mut c_void,kind:u32,a:u32,b:u32,c:u32,d:u32,
 #[no_mangle]
 pub unsafe extern "C" fn vt_next(p:*mut c_void)->i32{
     guard(0,||{let h=handle(p)?;let off=h.meta.next;if off==0{return Ok(0);}
-        if off==h.meta.off{return Err((40,"cyclic directory chain"));}
+        // Like libtiff, stop at any directory this chain already visited.
+        if off==h.meta.off||h.chain.contains(&off){return Err((40,"cyclic directory chain"));}
         let steps=verified_tiff::adapter_bounds::directory_step(h.chain_steps,h.limits.max_directories).map_err(err)?;
-        let page=if h.meta.off==0{0}else{h.page.saturating_add(1)};h.set_offset(off,page)?;h.chain_steps=steps;Ok(1)})
+        h.chain.reserve((h.chain.len()+1).next_power_of_two())?;
+        let page=if h.meta.off==0{0}else{h.page.saturating_add(1)};h.set_offset(off,page)?;h.chain_steps=steps;h.chain.push(off)?;Ok(1)})
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_field(p:*mut c_void,key:u32,kind:*mut u16,count:*mut usize)->*const u8{
@@ -343,8 +374,11 @@ pub unsafe extern "C" fn vt_real(p:*mut c_void,key:u32,out:*mut f32)->i32{
 #[no_mangle]
 pub unsafe extern "C" fn vt_tag(p:*mut c_void,index:usize)->u32{guard(u32::MAX,||{let h=handle(p)?;Ok(h.meta.tags.get(index).ok_or((INVALID,"tag index out of range"))?.key as u32)})}
 #[no_mangle]
-pub unsafe extern "C" fn vt_region(p:*mut c_void,x:u32,y:u32,w:u32,ht:u32,orientation:u32,len:*mut usize)->*const u8{
-    guard(ptr::null(),||{let h=handle(p)?;if len.is_null(){return Err((INVALID,"null length"));}if x as usize>=h.meta.width||y as usize>=h.meta.height||w as usize>h.meta.width-x as usize||ht as usize>h.meta.height-y as usize{return Err((INVALID,"RGBA region outside image"));}h.rgba(x as usize,y as usize,w as usize,ht as usize,orientation as usize)?;let b=h.rendered.as_ref().ok_or((5,"missing RGBA output"))?;*len=b.len();Ok(b.as_ptr())})
+pub unsafe extern "C" fn vt_region(p:*mut c_void,x:u32,y:u32,w:u32,ht:u32,source:u32,orientation:u32,len:*mut usize)->*const u8{
+    guard(ptr::null(),||{let h=handle(p)?;if len.is_null(){return Err((INVALID,"null length"));}if x as usize>=h.meta.width||y as usize>=h.meta.height||w as usize>h.meta.width-x as usize||ht as usize>h.meta.height-y as usize{return Err((INVALID,"RGBA region outside image"));}
+        // libtiff applies no flip for a source orientation it does not know.
+        let source=if (1..=8).contains(&source){source}else{orientation};
+        h.rgba_from(x as usize,y as usize,w as usize,ht as usize,source as usize,orientation as usize)?;let b=h.rendered.as_ref().ok_or((5,"missing RGBA output"))?;*len=b.len();Ok(b.as_ptr())})
 }
 
 #[no_mangle]

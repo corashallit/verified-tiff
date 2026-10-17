@@ -9,7 +9,7 @@ use verified_tiff::{native,native_samples as ns};
 impl Handle{
     pub fn native_ok(&self)->R<()>{
         let m=&self.meta;
-        if m.photo==6 && !self.jpeg_rgb && !self.ycbcr_raw(){return Err((NOTIMPL,"native subsampled YCbCr not implemented; request JPEGCOLORMODE_RGB"));}
+        if m.photo==6 && matches!(m.compression,6|7) && !self.jpeg_rgb{return Err((NOTIMPL,"native subsampled YCbCr not implemented; request JPEGCOLORMODE_RGB"));}
         Ok(())
     }
     pub fn segment(&mut self,k:usize,budget:&mut Budget)->R<()>{
@@ -79,7 +79,7 @@ impl Handle{
                 self.native_ok()?;
                 if self.ycbcr_raw()&&self.sampling()?.1>1{return Err((NOTIMPL,"vertically subsampled YCbCr requires strip/tile reads"));}
                 let m=&self.meta;if m.tiled{return Err((NOTIMPL,"scanline reads on tiled images not implemented"));}
-                if a>=m.height || (m.planar==2 && b>=m.ch) || (m.planar==1 && b!=0){return Err((INVALID,"scanline row/sample out of range"));}
+                if a>=m.height || (m.planar==2 && b>=m.ch){return Err((INVALID,"scanline row/sample out of range"));}
                 let row=self.raw_row(m.width)?;let idx=a/m.bh+if m.planar==2{b*m.per_plane()?}else{0};let within=(a%m.bh)*row;
                 let out=self.native_range(idx,within,row,&mut budget)?;self.rendered=Some(out);
             }
@@ -116,28 +116,42 @@ impl Handle{
         if m.width==0{return Err((INVALID,"no selected image directory"));}
         if m.format!=1 || !matches!(m.bits,1|2|4|8|16) || !matches!(m.photo,0|1|2|3|5|6|8){return Err((NOTIMPL,"RGBA sample/color conversion not implemented"));}
         let base=if m.photo==5{4}else if matches!(m.photo,2|6|8){3}else{1};
-        if m.ch<base || m.extra.len()>m.ch-base || (m.photo==3 && (m.ch!=1 || m.map.len()!=3*(1usize<<m.bits))){return Err((INVALID,"RGBA color/extra sample layout"));}
+        // libtiff draws grayscale and palette images from the first sample
+        // however many samples are extra.
+        if m.ch<base || base>1&&m.extra.len()>m.ch-base || (m.photo==3 && (m.ch!=1 || m.map.len()!=3*(1usize<<m.bits))){return Err((INVALID,"RGBA color/extra sample layout"));}
         if m.extra.iter().any(|v|*v>2){return Err((NOTIMPL,"extra sample meaning not implemented"));}
         if self.ycbcr_raw(){self.sampling()?;}
+        else if m.photo==6&&!matches!(m.compression,6|7){return Err((NOTIMPL,"RGBA conversion of plain YCbCr samples"));}
         if matches!(m.photo,5|8)&&!matches!(m.bits,8|16){return Err((NOTIMPL,"CMYK/Lab bit depth"));}
         if m.photo==5&&scalar(&self.data,&m.tags,332,1,m.le)?!=1{return Err((NOTIMPL,"non-CMYK separated inks"));}
         Ok(())
     }
     pub fn rgba(&mut self,x:usize,y:usize,w:usize,h:usize,orientation:usize)->R<()>{
+        self.rgba_from(x,y,w,h,self.meta.orientation,orientation)
+    }
+    /// `source` is the stored orientation to assume, as in libtiff's
+    /// `TIFFRGBAImage.orientation`.
+    pub fn rgba_from(&mut self,x:usize,y:usize,w:usize,h:usize,source:usize,orientation:usize)->R<()>{
         self.rendered=None;
         self.rgba_ok()?;
-        if matches!(self.meta.photo,5|8)||self.ycbcr_raw(){return self.rgba_color(x,y,w,h,orientation);}
+        if matches!(self.meta.photo,5|8)||self.ycbcr_raw(){return self.rgba_color(x,y,w,h,source,orientation);}
         let mut budget=Budget{remaining:self.work};
         if !(1..=8).contains(&orientation) || w==0 || h==0{return Err((INVALID,"invalid RGBA dimensions/orientation"));}
         let mut result=Buf::zeros(product(product(w,h)?,4)?,self.limits.max_output,&self.source.mem)?;
         let m=&self.meta;let width=m.width;let height=m.height;let bw=m.bw;let bh=m.bh;let bits=m.bits;
-        let channels=m.ch;let planar=m.planar;let photo=m.photo;let source_orientation=m.orientation;
+        let channels=m.ch;let planar=m.planar;let photo=m.photo;
         let base=if photo==2||photo==6{3}else{1};
-        let alpha=m.extra.iter().position(|v|*v==1||*v==2).map(|i|(channels-m.extra.len()+i,m.extra[i]));
+        // libtiff draws contiguous grayscale with alpha only for two 8-bit
+        // samples, and palette images without it. Separate planes of
+        // grayscale draw like RGB. Alpha follows the color samples.
+        let separate=planar==2&&channels>1;
+        let alpha=if base>=channels||base==1&&(photo==3||!separate&&!(bits==8&&channels==2)){None}else{m.alpha().map(|kind|(base,kind))};
         let row=m.row_bytes(bw)?;let across=(width-1)/bw+1;
         let right=x.checked_add(w).ok_or((LIMIT,"RGBA extent overflow"))?.min(width);
         let bottom=y.checked_add(h).ok_or((LIMIT,"RGBA extent overflow"))?.min(height);
-        let (fx,fy)=geometry::orientation(source_orientation,orientation).map_err(err)?;
+        let (fx,fy)=geometry::orientation(source,orientation).map_err(err)?;
+        // Like libtiff, a map with no entry above 255 already holds 8-bit values.
+        let shift=if self.meta.map.iter().all(|v|*v<256){0}else{8};
         let fast=planar==1&&matches!(bits,8|16)&&photo!=3;
         let packed=channels==1&&matches!(photo,0|1|3)&&(matches!(bits,1|2|4)||(photo==3&&bits==8));
         let mut expansion=[[0u8;32];256];
@@ -145,7 +159,7 @@ impl Handle{
             let mask=(1usize<<bits)-1;
             for byte in 0..256{for j in 0..8/bits{
                 let v=(byte>>(8-bits-j*bits))&mask;
-                let q=if photo==3{let n=1usize<<bits;[(self.meta.map[v]>>8) as u8,(self.meta.map[n+v]>>8) as u8,(self.meta.map[2*n+v]>>8) as u8,255]}
+                let q=if photo==3{let n=1usize<<bits;[(self.meta.map[v]>>shift) as u8,(self.meta.map[n+v]>>shift) as u8,(self.meta.map[2*n+v]>>shift) as u8,255]}
                     else{let v=if photo==0{mask-v}else{v};let b=((v*255+mask/2)/mask) as u8;[b,b,b,255]};
                 pack(&mut expansion[byte][j*4..j*4+4],q);
             }}
@@ -182,19 +196,19 @@ impl Handle{
                         let index=(xx-bx*bw)*if planar==2{1}else{channels}+c;
                         let v=sample(&data,0,index,bits)?;
                         if photo==3{
-                            let n=1usize<<bits;for c in 0..3{rgba[c]=(self.meta.map[c*n+v as usize]>>8) as u8;}
+                            let n=1usize<<bits;for c in 0..3{rgba[c]=(self.meta.map[c*n+v as usize]>>shift) as u8;}
                         }else if ci<base{
                             let max=(1u32<<bits)-1;let v=if photo==0{max-v}else{v};
-                            let b=if bits==16 && base==1{(v>>8) as u8}else{((v*255+max/2)/max) as u8};
+                            let b=if bits==16 && base==1 && !separate{(v>>8) as u8}else{((v*255+max/2)/max) as u8};
                             if base==1{rgba[0]=b;rgba[1]=b;rgba[2]=b;}else{rgba[ci]=b;}
-                        }else if alpha.is_some_and(|(i,_)|ci==i){rgba[3]=if bits==16{if base==3{((v+128)/257) as u8}else{(v>>8) as u8}}else{((v*255)/((1u32<<bits)-1)) as u8};}
+                        }else if alpha.is_some_and(|(i,_)|ci==i){rgba[3]=if bits==16{((v+128)/257) as u8}else{((v*255)/((1u32<<bits)-1)) as u8};}
                     }
                     pack(&mut result[dest..dest+4],rgba);
                 }}
                 if cached.is_some(){self.cache=cached;}
             }
         }}
-        if !fast && base==3 && alpha.is_some_and(|(_,kind)|kind==2){
+        if !fast && (base==3||separate) && alpha.is_some_and(|(_,kind)|kind==2){
             for p in result.chunks_exact_mut(4){let mut q=unpack(p);for c in 0..3{q[c]=((q[c] as u32*q[3] as u32+127)/255) as u8;}pack(p,q);}
         }
         self.rendered=Some(result);Ok(())
@@ -202,9 +216,12 @@ impl Handle{
     fn special(&mut self,k:usize,encoded:&[u8],budget:&mut Budget)->R<Buf<u8>>{
         if !matches!(self.meta.compression,3|4|6|7|50001|34676){return Err((NOTIMPL,"compression not implemented"));}
         let source=self.synthetic(k,encoded,budget)?;
-        let once=if matches!(self.meta.compression,6|7){self.jpeg_once(k,&source,budget)?}else{None};
+        // The one-segment view holds only bytes the file limit already admitted,
+        // plus its own header. It can outgrow a limit set to the file's size.
+        let limits=Limits{max_input:self.limits.max_input.max(source.len()),..self.limits};
+        let once=if matches!(self.meta.compression,6|7){self.jpeg_once(k,&source,&limits,budget)?}else{None};
         let pixels=match once{Some(p)=>p,None=>{
-            let image=inspect_raster(&source,0,&self.limits,budget).map_err(err)?;
+            let image=inspect_raster(&source,0,&limits,budget).map_err(err)?;
             let mut pixels=Buf::zeros(image.output_len(),self.limits.max_output,&self.source.mem)?;
             let mut scratch=Buf::zeros(image.scratch_len(),self.limits.max_output,&self.source.mem)?;
             image.decode_with_scratch(&mut pixels,&mut scratch,budget).map_err(err)?;pixels
@@ -237,7 +254,7 @@ impl Handle{
     /// fit. The probe's work is charged whatever its outcome. An input error is
     /// final; an undersized estimate leaves the rest of the budget to the
     /// general path.
-    fn jpeg_once(&self,k:usize,source:&[u8],budget:&mut Budget)->R<Option<Buf<u8>>>{
+    fn jpeg_once(&self,k:usize,source:&[u8],limits:&Limits,budget:&mut Budget)->R<Option<Buf<u8>>>{
         let m=&self.meta;let Ok(rows)=m.segment_rows(k) else {return Ok(None)};
         let Some(len)=m.bw.checked_mul(rows).and_then(|n|n.checked_mul(m.ch)) else {return Ok(None)};
         // Each component has at most ceil(n/8)+3 blocks per axis (sampling <= 4).
@@ -247,7 +264,7 @@ impl Handle{
         let Ok(mut pixels)=Buf::zeros(len,self.limits.max_output,&self.source.mem) else {return Ok(None)};
         let Ok(mut scratch)=Buf::zeros(room,self.limits.max_output,&self.source.mem) else {return Ok(None)};
         let mut probe=Budget{remaining:budget.remaining};
-        let r=decode_jpeg_into(source,0,&self.limits,&mut pixels,&mut scratch,&mut probe);
+        let r=decode_jpeg_into(source,0,limits,&mut pixels,&mut scratch,&mut probe);
         budget.remaining=probe.remaining;
         match r{
             Ok(image) if image.output_len()==len=>Ok(Some(pixels)),
@@ -272,7 +289,7 @@ impl Handle{
         b.repeated(339,m.format,m.ch)?;
         // WebP's output already carries the stored components. Suppress the
         // old raster API's lossy unassociation; the caller owns alpha meaning.
-        if !m.extra.is_empty(){if m.compression==50001 && m.extra.len()==1{b.number(338,3,2)?;}else{b.raw_tag(&self.data,*find(&m.tags,338).as_ref().unwrap())?;}}
+        if let Some(t)=find(&m.tags,338).filter(|t|t.count>0){if m.compression==50001 && t.count==1{b.number(338,3,2)?;}else{b.raw_tag(&self.data,t)?;}}
         for key in [292,293,347,512,515,529,530,531,532]{if key==515 && jif!=0{continue;}if let Some(t)=find(&m.tags,key){b.raw_tag(&self.data,t)?;}}
         for key in [519,520,521]{if jif!=0{continue;}if let Some(t)=find(&m.tags,key){
             if t.count>3{return Err((INVALID,"OJPEG table count"));}let mut offsets=[0u32;3];

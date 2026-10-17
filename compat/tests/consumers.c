@@ -12,6 +12,8 @@ static tmsize_t rd(thandle_t v,void *p,tmsize_t n){struct memory *m=v;m->reads++
 static tmsize_t wr(thandle_t v,void *p,tmsize_t n){struct memory *m=v;if(n<0||m->at>sizeof(m->p)||(size_t)n>sizeof(m->p)-m->at)return -1;memcpy(m->p+m->at,p,(size_t)n);m->at+=(size_t)n;if(m->n<m->at)m->n=m->at;return n;}
 static toff_t sk(thandle_t v,toff_t n,int w){struct memory *m=v;if(w!=SEEK_SET||n>sizeof(m->p))return (toff_t)-1;m->at=(size_t)n;return n;}
 static toff_t sz(thandle_t v){return ((struct memory*)v)->n;}
+/* Like libvips's target writer, which asserts that libtiff never asks. */
+static toff_t no_size(thandle_t v){(void)v;abort();}
 static int cl(thandle_t v){((struct memory*)v)->closed++;return 0;}
 static TIFFExtendProc previous;
 static void extend(TIFF *t){
@@ -35,6 +37,35 @@ int main(int argc,char **argv){
   if(atoi(argv[3])){assert(t);unsigned char out[2048];assert(TIFFReadEncodedStrip(t,0,out,sizeof(out))>0);TIFFClose(t);}
   else assert(!t&&errno==EINVAL);
   return 0;
+ }
+ if(!strcmp(mode,"rgba-as-stored")){
+  /* Pillow sets the source orientation itself, then transposes afterwards. */
+  TIFF *t=TIFFOpen(argv[2],"r");assert(t);TIFFRGBAImage img;char e[1024];assert(TIFFRGBAImageBegin(&img,t,0,e));
+  img.orientation=ORIENTATION_TOPLEFT;img.req_orientation=ORIENTATION_TOPLEFT;size_t n=(size_t)img.width*img.height;
+  uint32_t *r=calloc(n,4);assert(r&&TIFFRGBAImageGet(&img,r,img.width,img.height));fwrite(r,4,n,stdout);
+  free(r);TIFFRGBAImageEnd(&img);TIFFClose(t);return 0;
+ }
+ if(!strcmp(mode,"implied")){
+  TIFF *t=TIFFOpen(argv[2],"r");assert(t);uint16_t compression=0,planar=0;uint32_t rows=7;
+  assert(TIFFGetField(t,TIFFTAG_COMPRESSION,&compression)&&compression==COMPRESSION_NONE);
+  assert(TIFFGetField(t,TIFFTAG_PLANARCONFIG,&planar)&&planar==PLANARCONFIG_CONTIG);
+  assert(TIFFGetFieldDefaulted(t,TIFFTAG_ROWSPERSTRIP,&rows));TIFFClose(t);return 0;
+ }
+ if(!strcmp(mode,"pages")){
+  TIFF *t=TIFFOpen(argv[2],"r");assert(t&&argc==4);tdir_t n=(tdir_t)atoi(argv[3]);assert(TIFFNumberOfDirectories(t)==n);
+  for(int pass=0;pass<2;pass++){tdir_t seen=1;while(TIFFReadDirectory(t))seen++;assert(seen==n&&TIFFCurrentDirectory(t)==n-1);assert(TIFFSetDirectory(t,0));}
+  assert(TIFFSetDirectory(t,n-1)&&!TIFFReadDirectory(t)&&!TIFFSetDirectory(t,n));
+  /* Like libtiff, a main-chain directory keeps its number through TIFFSetSubDirectory. */
+  assert(TIFFSetDirectory(t,n-1));uint64_t last=TIFFCurrentDirOffset(t);
+  assert(TIFFSetDirectory(t,0)&&TIFFSetSubDirectory(t,last)&&TIFFCurrentDirectory(t)==n-1);TIFFClose(t);return 0;
+ }
+ if(!strcmp(mode,"exact-limit")){
+  FILE *f=fopen(argv[2],"rb");assert(f&&!fseek(f,0,SEEK_END));long n=ftell(f);assert(n>0);fclose(f);
+  TIFFOpenOptions *o=TIFFOpenOptionsAlloc();assert(o&&VTIFFOpenOptionsSetLimits(o,(uint64_t)n,1U<<20,100000000));
+  TIFF *t=TIFFOpenExt(argv[2],"rc",o);TIFFOpenOptionsFree(o);assert(t);static unsigned char out[1U<<20];
+  uint16_t photo=0;if(TIFFGetField(t,TIFFTAG_PHOTOMETRIC,&photo)&&photo==PHOTOMETRIC_YCBCR)assert(TIFFSetField(t,TIFFTAG_JPEGCOLORMODE,JPEGCOLORMODE_RGB));
+  assert((TIFFIsTiled(t)?TIFFReadEncodedTile(t,0,out,sizeof(out)):TIFFReadEncodedStrip(t,0,out,sizeof(out)))>0);
+  TIFFClose(t);return 0;
  }
  if(!strcmp(mode,"environment")){
   assert(argc==4);int expect=atoi(argv[3]);TIFF *t=TIFFOpen(argv[2],"rc");
@@ -74,7 +105,7 @@ int main(int argc,char **argv){
  if(!strcmp(mode,"writer")){
   for(int big=0;big<2;big++)for(int le=0;le<2;le++)for(int tiles=0;tiles<2;tiles++){
    struct memory m={0};const char *modes[]={"wb+","wl+","wb8+","wl8+"};
-   TIFF *t=TIFFClientOpen("temporary",modes[big*2+le],&m,rd,wr,sk,cl,sz,NULL,NULL);assert(t);
+   TIFF *t=TIFFClientOpen("temporary",modes[big*2+le],&m,rd,wr,sk,cl,no_size,NULL,NULL);assert(t);
    assert(TIFFSetField(t,256,16U)&&TIFFSetField(t,257,16U));
    assert(TIFFSetField(t,258,8)&&TIFFSetField(t,277,3)&&TIFFSetField(t,262,2));
    assert(TIFFSetField(t,259,1)&&TIFFSetField(t,284,1)&&TIFFSetField(t,339,1));
@@ -102,7 +133,7 @@ int main(int argc,char **argv){
   void *expected=malloc((size_t)size),*out=malloc((size_t)size),*input=malloc((size_t)insize);assert(expected&&out&&input);
   tmsize_t n=tiled?TIFFReadEncodedTile(source,0,expected,size):TIFFReadEncodedStrip(source,0,expected,size);assert(n>0);
   assert((tiled?TIFFReadRawTile(source,0,input,(tmsize_t)insize):TIFFReadRawStrip(source,0,input,(tmsize_t)insize))==(tmsize_t)insize);
-  struct memory m={0};TIFF *t=TIFFClientOpen("temporary",TIFFIsBigEndian(source)?"wb+":"wl+",&m,rd,wr,sk,cl,sz,NULL,NULL);assert(t);
+  struct memory m={0};TIFF *t=TIFFClientOpen("temporary",TIFFIsBigEndian(source)?"wb+":"wl+",&m,rd,wr,sk,cl,no_size,NULL,NULL);assert(t);
   assert(TIFFSetField(t,256,w)&&TIFFSetField(t,257,h));
   const uint32_t scalar_tags[]={258,259,262,266,277,284,317,339};
   for(size_t i=0;i<sizeof(scalar_tags)/sizeof(*scalar_tags);i++){uint16_t v=0;if(TIFFGetFieldDefaulted(source,scalar_tags[i],&v))assert(TIFFSetField(t,scalar_tags[i],v));}

@@ -98,6 +98,22 @@ class Consumers(unittest.TestCase):
    tags+= [(322,4,[bw]),(323,4,[bh])] if tiled else [(278,4,[bh])]
    with self.subTest(hs=hs,vs=vs,tiled=tiled,codec=codec,le=le):
     self.dump(assemble([tags],le=le)[0],'rgba',oracle=(hs,vs) in [(1,1),(2,1),(2,2),(4,1),(4,2),(1,2)],expected=bytes(rgba))
+ def test_chopped_and_plain_ycbcr(self):
+  # libtiff chops one uncompressed YCbCr strip into whole sampling rows of
+  # about 8 KiB, and separate YCbCr planes hold plain samples.
+  import random
+  rnd=random.Random(5);w,h=1500,41
+  for hs,vs,rows in itertools.product([1,2,4],[1,2,4],[None,41]):
+   size=-(-w//hs)*(hs*vs+2)*-(-h//vs);data=bytes(rnd.randrange(256) for _ in range(size))
+   tags=[(256,4,[w]),(257,4,[h]),(258,3,[8]*3),(259,3,[1]),(262,3,[6]),(277,3,[3]),(530,3,[hs,vs]),(273,4,('SEG',[data])),(279,4,[size])]+([(278,4,[rows])] if rows else [])
+   blob=assemble([tags])[0]
+   with self.subTest(hs=hs,vs=vs,rows=rows):
+    for mode in ['sizes','counts','native']:self.dump(blob,mode)
+    if (hs,vs) in [(1,1),(2,1),(2,2),(4,1),(4,2),(1,2)]:self.dump(blob,'rgba')
+  for tiled in [False,True]:
+   blob=assemble([scene(w=17,h=19,photo=6,tiled=tiled,separate=True)[3]])[0]
+   with self.subTest(separate=True,tiled=tiled):
+    for mode in ['sizes','native']+([] if tiled else ['scan']):self.dump(blob,mode)
  def test_temporary_decoder_context(self):
   prefix=self.path/'temporary';self.call('writer','unused',prefix)
   # libtiff can reopen the metadata-only images and returns their dimensions.
@@ -132,6 +148,161 @@ class Consumers(unittest.TestCase):
   for bits,predict in [(8,2),(32,3),(64,3)]:
    for le,tiled in itertools.product([False,True],repeat=2):
     p=self.path/'codec.tif';p.write_bytes(scene(w=17,h=19,ch=3,bits=bits,fmt=3 if predict==3 else 1,codec=8,predict=predict,le=le,tiled=tiled)[0]);self.call('clone',p)
+ def test_rgba_caller_source_orientation(self):
+  # A caller-set TIFFRGBAImage.orientation replaces the stored Orientation tag.
+  for ch,photo in [(1,None),(3,None),(4,5)]:
+   out=[]
+   for orientation in [1,4,6]:
+    p=self.path/'oriented.tif';p.write_bytes(scene(w=17,h=19,ch=ch,photo=photo,orientation=orientation)[0]);out.append(self.call('rgba-as-stored',p))
+   with self.subTest(ch=ch):self.assertEqual(out[0],out[1]);self.assertEqual(out[0],out[2])
+ def test_eight_bit_colormaps(self):
+  # libtiff treats a map with no entry above 255 as 8-bit and others as 16-bit.
+  for bits,scale in itertools.product([2,8],[1,257]):
+   n=1<<bits;cmap=[(i*37+c*101)%256*scale for c in range(3) for i in range(n)]
+   blob=scene(w=17,h=19,ch=1,bits=bits,photo=3,extra=[(320,3,cmap)])[0]
+   with self.subTest(bits=bits,scale=scale):self.dump(blob,'rgba')
+ def test_palette_without_usable_colormap(self):
+  # libtiff ignores a ColorMap without 1 << BitsPerSample entries per channel.
+  # An 8-bit palette image then reads as grayscale; a 4-bit one fails to open.
+  for cmap in [None,[1,2,3]]:
+   extra=[] if cmap is None else [(320,3,cmap)]
+   with self.subTest(cmap=cmap):
+    self.dump(scene(w=17,h=19,ch=1,bits=8,photo=3,extra=extra)[0],'rgba')
+    p=self.path/'in.tif';p.write_bytes(scene(w=17,h=19,ch=1,bits=4,photo=3,extra=extra)[0])
+    for exe in ['dump','dump-libtiff']:
+     self.assertEqual(subprocess.run([str(OUT/exe),str(p),'rgba',str(self.path/'out')],capture_output=True).returncode,3)
+ def test_directory_reader_implied_fields(self):
+  # Like libtiff, Compression and PlanarConfig read back even when absent.
+  self.call('implied',ROOT/'tests/fixtures/profile-witness.tif')
+ def test_directory_loops_end_iteration(self):
+  # libtiff counts each distinct IFD once and stops a ReadDirectory loop there.
+  for name,pages in [('test_ifd_loop_to_self.tif',1),('test_ifd_loop_to_first.tif',2),('test_ifd_loop_subifd.tif',5)]:
+   self.call('pages',ROOT/'tests/upstream'/name,pages)
+ def test_unreadable_directory_ends_count(self):
+  # libtiff counts the directories before one whose link it cannot read.
+  for big in [False,True]:
+   tags=scene(big=big)[3];blob=bytearray(assemble([tags,tags],big,main_next=[1,None])[0])
+   cw,ew,slot=(8,20,8) if big else (2,12,4);link=(16 if big else 8)+2*(cw+ew*len(tags))+slot
+   struct.pack_into('<Q' if big else '<I',blob,link,len(blob)+64)
+   p=self.path/'tail.tif';p.write_bytes(blob)
+   with self.subTest(big=big):self.call('pages',p,2)
+ def test_file_sized_input_limit(self):
+  # Single-segment codecs decode a derived view that is larger than a tiny file.
+  for name in ['fax-g3.tif','fax-g4-tile.tif','jpeg-gray.tif','jpeg-tile.tif','ojpeg-tables.tif','webp-tile.tif','logluv-strip.tif']:
+   self.call('exact-limit',ROOT/'tests/fixtures'/name)
+ def test_strip_queries_on_tiled_images(self):
+  # libtiff answers strip counts and sizes from RowsPerStrip on tiled images too.
+  for name in ['acceptance-gray16.tif','deflate-planar16.tif','lzw-rgb-tile.tif','rgb16.tif','planar-alpha.tif','float64-planar.tif','palette4.tif','fax-g4-tile.tif','jpeg-tile.tif','jpeg-ycbcr.tif']:
+   with self.subTest(name=name):self.dump((ROOT/'tests/fixtures'/name).read_bytes(),'sizes')
+  # One-row strips of a tall two-plane image overflow libtiff's 32-bit count.
+  tags=[(256,4,[16]),(257,4,[0x80000008]),(258,3,[8,8]),(259,3,[1]),(262,3,[1]),(277,3,[2]),(278,4,[1]),(284,3,[2]),
+   (322,4,[16]),(323,4,[0x7ffffff0]),(324,4,('SEG',[b'\0']*4)),(325,4,[1]*4)]
+  self.assertEqual(self.dump(assemble([tags])[0],'sizes').split()[0],b'0')
+ def test_estimated_strip_byte_counts(self):
+  # libtiff estimates segment byte counts that are missing or implausible:
+  # from the geometry when uncompressed, else from the file size less the
+  # directory. Deferred strile loading skips the check of several strips.
+  def edit(tags,key,v):return [t for t in tags if t[0]!=key]+([] if v is None else [(key,4,v)])
+  cases=[]
+  for codec,big in [(1,False),(5,False),(5,True),(8,False)]:
+   one=scene(w=17,h=3,codec=codec,big=big)[3];tile=scene(w=16,h=16,codec=codec,big=big,tiled=True)[3]
+   planes=scene(w=17,h=3,codec=codec,big=big,separate=True)[3];many=scene(w=17,h=19,codec=codec,big=big)[3]
+   for v in [None,[0],[5],[100],[153],[10**6]]:cases.append((edit(one,279,v),big))
+   cases+=[(edit(tile,325,None),big),(edit(tile,325,[0]),big),(edit(planes,279,None),big)]
+   for v in [[154,153]+[153]*5,[0,7]+[153]*5,[153]*6+[51]]:cases.append((edit(many,279,v),big))
+  # Rows of YCbCr samples are counted in sampling blocks; an unreadable pair
+  # takes the default.
+  for sub in [[2,2],[4,1],[2]]:
+   cases.append((edit(scene(w=17,h=3,photo=6,extra=[(530,3,sub)])[3],279,None),False))
+  # The directory size includes the NUL libtiff adds to an anonymous ASCII
+  # value that lacks one, but not to a known ASCII field.
+  for tag,value in itertools.product([65000,305],[b'abc',b'abcd',b'abcdefgh',b'abc\0']):
+   cases.append((edit(scene(w=17,h=3,codec=5,extra=[(tag,2,value)])[3],279,None),False))
+  p=self.path/'in.tif'
+  for i,(tags,big) in enumerate(cases):
+   with self.subTest(i=i):
+    blob=assemble([tags],big)[0];self.dump(blob,'counts')
+    if (262,3,[6]) in tags:continue
+    # Pixels read the same, or fail in both, with the counts as estimated.
+    got=[]
+    for exe in ['dump','dump-libtiff']:
+     r=subprocess.run([str(OUT/exe),str(p),'native',str(self.path/'out'),'0','1'],capture_output=True)
+     got.append(b'' if r.returncode else (self.path/'out').read_bytes())
+    self.assertEqual(*got)
+  # Several contiguous segments without counts fail to open in both.
+  for tags in [scene(w=17,h=19)[3],scene(w=17,h=19,tiled=True)[3]]:
+   p.write_bytes(assemble([edit(edit(tags,279,None),325,None)])[0])
+   for exe in ['dump','dump-libtiff']:
+    self.assertEqual(subprocess.run([str(OUT/exe),str(p),'counts',str(self.path/'out')],capture_output=True).returncode,3)
+ def test_extra_samples_and_alpha(self):
+  # libtiff counts samples beyond the photometric's color channels as
+  # unspecified extra samples and rejects ExtraSamples it cannot set. Its RGBA
+  # reader takes alpha only from the first extra sample, as associated alpha
+  # when unspecified with more than three samples, and draws grayscale alpha
+  # only for two 8-bit samples or separate planes.
+  p=self.path/'in.tif'
+  for photo,ch,extra,bits,separate in itertools.product([None,0,1,2],[1,2,4,5],[None,[0],[2],[0,2],[2,0],[999],[3],[1]*6],[8,16],[False,True]):
+   # libtiff draws separate MinIsWhite planes uninverted, a libtiff bug.
+   if photo==0 and separate and ch>1:continue
+   tags=scene(w=5,h=3,ch=ch,bits=bits,separate=separate,photo=1 if photo is None else photo)[3]
+   tags=[t for t in tags if t[0]!=262 or photo is not None]+([] if extra is None else [(338,3,extra)])
+   p.write_bytes(assemble([tags])[0])
+   with self.subTest(photo=photo,ch=ch,extra=extra,bits=bits,separate=separate):
+    for mode in ['extras','rgba']:
+     got=[]
+     for exe in ['dump','dump-libtiff']:
+      r=subprocess.run([str(OUT/exe),str(p),mode,str(self.path/'out'),'0','1'],capture_output=True)
+      got.append(b'' if r.returncode else (self.path/'out').read_bytes())
+     self.assertEqual(*got)
+ def test_tile_and_raster_sizes(self):
+  # libtiff sizes tile rows and raster scanlines in whole samples, without
+  # YCbCr subsampling, and a strip image's tiles are its strips.
+  for name in ['alpha-4-2-none.tif','bilevel-strip.tif','deflate-planar16.tif','fax-g3.tif','acceptance-planar.tif']:
+   with self.subTest(name=name):self.dump((ROOT/'tests/fixtures'/name).read_bytes(),'sizes')
+  for tiled,separate,sub,rows in itertools.product([False,True],[False,True],[None,[2,2],[4,1],[1,2]],[None,4]):
+   if rows and tiled:continue
+   extra=([] if sub is None else [(530,3,sub)])
+   tags=scene(w=17,h=19,photo=6,tiled=tiled,separate=separate,extra=extra)[3]
+   if not tiled:
+    # One whole-sample segment per strip, so every count matches.
+    per=rows or 19;n=-(-19//per)*(3 if separate else 1);seg=bytes(per*17*(1 if separate else 3))
+    tags=[t for t in tags if t[0] not in (273,278,279)]+[(273,4,('SEG',[seg]*n)),(279,4,[len(seg)]*n)]+([(278,4,[rows])] if rows else [])
+   with self.subTest(tiled=tiled,separate=separate,sub=sub,rows=rows):self.dump(assemble([tags])[0],'sizes')
+ def test_strip_and_tile_indexes(self):
+  # libtiff computes strip indexes on tiled images and tile indexes on strip
+  # images, ignores the sample of a contiguous image, and reads RowsPerStrip
+  # back only once it is set; its byte count estimate implies one strip.
+  for tiled,separate,rows in itertools.product([False,True],[False,True],[None,4,40]):
+   tags=scene(w=17,h=19,ch=3,tiled=tiled,separate=separate)[3]
+   if not tiled:
+    per=min(rows or 19,19);n=-(-19//per)*(3 if separate else 1);seg=bytes(per*17*(1 if separate else 3))
+    tags=[t for t in tags if t[0] not in (273,278,279)]+[(273,4,('SEG',[seg]*n)),(279,4,[len(seg)]*n)]
+   if rows:tags=[t for t in tags if t[0]!=278]+[(278,4,[rows])]
+   with self.subTest(tiled=tiled,separate=separate,rows=rows):self.dump(assemble([tags])[0],'layout')
+  for count,h in [(1,257),(257,257),(0,9000)]:
+   tags=[(256,4,[1]),(257,4,[h]),(258,3,[8]),(259,3,[1]),(262,3,[1]),(273,4,('SEG',[bytes(h)])),(279,4,[count])]
+   with self.subTest(count=count,h=h):
+    for mode in ['layout','sizes','counts']:self.dump(assemble([tags])[0],mode)
+ def test_real_arrays(self):
+  # libtiff divides float array rationals in single precision, with an
+  # unsigned denominator, reads a zero denominator as 0 and clamps doubles.
+  import struct
+  rational=lambda *p:b''.join(struct.pack('<II',n&0xffffffff,d) for n,d in p)
+  cases=[(5,rational((1,3),(2,3))),(5,rational((299,1000),(587,1000),(114,1000))),(5,rational((577090038,2444712011),(1930549412,2028277858),(1,0),(16777217,1),(3,16777219),(9,0xffffffff))),
+   (10,rational((-1,3),(-7,0),(5,0xffffffff))),(12,struct.pack('<3d',1e300,-1e300,0.1)),(11,struct.pack('<2f',0.3127,0.329)),(4,struct.pack('<6I',1,2,3,16777217,5,6))]
+  for kind,raw in cases:
+   n=len(raw)//WIDTHS[kind]
+   for key in [318,319,529,532]:
+    want={318:2,319:6,529:3,532:6}[key]
+    if n<want:continue
+    raw_n=raw[:want*WIDTHS[kind]]
+    tags=scene(w=4,h=3,ch=3,photo=6 if key==529 else 2)[3]+[(key,kind,raw_n)]
+    with self.subTest(kind=kind,key=key,raw=raw_n.hex()):self.dump(assemble([tags])[0],'reals')
+ def test_unknown_tag_counts(self):
+  # libtiff counts the NUL it adds to an unterminated ASCII value, and an
+  # empty value has no data pointer.
+  for kind,value in [(2,b'unterminated'),(2,b'a\0b'),(2,b'done\0'),(2,b''),(1,b''),(1,b'\1\2')]:
+   with self.subTest(kind=kind,value=value):self.dump(scene(extra=[(65000,kind,value)])[0],'tag65000')
  def test_read_side_sample_format(self):
   for bits,le,big in itertools.product([32,64],[False,True],[False,True]):
    p=self.path/'float.tif';p.write_bytes(scene(bits=bits,fmt=3,le=le,big=big,codec=8)[0]);self.call('readset',p)
