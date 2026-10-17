@@ -124,20 +124,25 @@ impl Handle{
         Ok(())
     }
     pub fn rgba(&mut self,x:usize,y:usize,w:usize,h:usize,orientation:usize)->R<()>{
+        self.rgba_from(x,y,w,h,self.meta.orientation,orientation)
+    }
+    /// `source` is the stored orientation to assume, as in libtiff's
+    /// `TIFFRGBAImage.orientation`.
+    pub fn rgba_from(&mut self,x:usize,y:usize,w:usize,h:usize,source:usize,orientation:usize)->R<()>{
         self.rendered=None;
         self.rgba_ok()?;
-        if matches!(self.meta.photo,5|8)||self.ycbcr_raw(){return self.rgba_color(x,y,w,h,orientation);}
+        if matches!(self.meta.photo,5|8)||self.ycbcr_raw(){return self.rgba_color(x,y,w,h,source,orientation);}
         let mut budget=Budget{remaining:self.work};
         if !(1..=8).contains(&orientation) || w==0 || h==0{return Err((INVALID,"invalid RGBA dimensions/orientation"));}
         let mut result=Buf::zeros(product(product(w,h)?,4)?,self.limits.max_output,&self.source.mem)?;
         let m=&self.meta;let width=m.width;let height=m.height;let bw=m.bw;let bh=m.bh;let bits=m.bits;
-        let channels=m.ch;let planar=m.planar;let photo=m.photo;let source_orientation=m.orientation;
+        let channels=m.ch;let planar=m.planar;let photo=m.photo;
         let base=if photo==2||photo==6{3}else{1};
         let alpha=m.extra.iter().position(|v|*v==1||*v==2).map(|i|(channels-m.extra.len()+i,m.extra[i]));
         let row=m.row_bytes(bw)?;let across=(width-1)/bw+1;
         let right=x.checked_add(w).ok_or((LIMIT,"RGBA extent overflow"))?.min(width);
         let bottom=y.checked_add(h).ok_or((LIMIT,"RGBA extent overflow"))?.min(height);
-        let (fx,fy)=geometry::orientation(source_orientation,orientation).map_err(err)?;
+        let (fx,fy)=geometry::orientation(source,orientation).map_err(err)?;
         // Like libtiff, a map with no entry above 255 already holds 8-bit values.
         let shift=if self.meta.map.iter().all(|v|*v<256){0}else{8};
         let fast=planar==1&&matches!(bits,8|16)&&photo!=3;

@@ -79,8 +79,8 @@ const uint8_t *__real_vt_read_size(void*,uint32_t,uint32_t,uint32_t,size_t,size_
 const uint8_t *__wrap_vt_read_size(void*p,uint32_t k,uint32_t a,uint32_t b,size_t z,size_t*n){if(injecting("vt_read_size",0)){*n=fault_len;return fault_rc?scratch.bytes:NULL;}return __real_vt_read_size(p,k,a,b,z,n);}
 const uint8_t *__real_vt_read(void*,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,size_t*);
 const uint8_t *__wrap_vt_read(void*p,uint32_t k,uint32_t a,uint32_t b,uint32_t o,uint32_t z,size_t*n){if(injecting("vt_read",0)){*n=fault_len;return fault_rc?scratch.bytes:NULL;}return __real_vt_read(p,k,a,b,o,z,n);}
-const uint8_t *__real_vt_region(void*,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,size_t*);
-const uint8_t *__wrap_vt_region(void*p,uint32_t x,uint32_t y,uint32_t w,uint32_t h,uint32_t o,size_t*n){if(injecting("vt_region",0)){*n=fault_len;return fault_rc?scratch.bytes:NULL;}return __real_vt_region(p,x,y,w,h,o,n);}
+const uint8_t *__real_vt_region(void*,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,size_t*);
+const uint8_t *__wrap_vt_region(void*p,uint32_t x,uint32_t y,uint32_t w,uint32_t h,uint32_t s,uint32_t o,size_t*n){if(injecting("vt_region",0)){*n=fault_len;return fault_rc?scratch.bytes:NULL;}return __real_vt_region(p,x,y,w,h,s,o,n);}
 int __real_vt_commit(uint8_t*,size_t,size_t,const uint8_t*,size_t);
 int __wrap_vt_commit(uint8_t*d,size_t c,size_t a,const uint8_t*s,size_t n){return injecting("vt_commit",0)?fault_rc:__real_vt_commit(d,c,a,s,n);}
 int __real_vt_put(void*,uint32_t,uint16_t,size_t,const uint8_t*);

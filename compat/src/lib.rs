@@ -350,8 +350,11 @@ pub unsafe extern "C" fn vt_real(p:*mut c_void,key:u32,out:*mut f32)->i32{
 #[no_mangle]
 pub unsafe extern "C" fn vt_tag(p:*mut c_void,index:usize)->u32{guard(u32::MAX,||{let h=handle(p)?;Ok(h.meta.tags.get(index).ok_or((INVALID,"tag index out of range"))?.key as u32)})}
 #[no_mangle]
-pub unsafe extern "C" fn vt_region(p:*mut c_void,x:u32,y:u32,w:u32,ht:u32,orientation:u32,len:*mut usize)->*const u8{
-    guard(ptr::null(),||{let h=handle(p)?;if len.is_null(){return Err((INVALID,"null length"));}if x as usize>=h.meta.width||y as usize>=h.meta.height||w as usize>h.meta.width-x as usize||ht as usize>h.meta.height-y as usize{return Err((INVALID,"RGBA region outside image"));}h.rgba(x as usize,y as usize,w as usize,ht as usize,orientation as usize)?;let b=h.rendered.as_ref().ok_or((5,"missing RGBA output"))?;*len=b.len();Ok(b.as_ptr())})
+pub unsafe extern "C" fn vt_region(p:*mut c_void,x:u32,y:u32,w:u32,ht:u32,source:u32,orientation:u32,len:*mut usize)->*const u8{
+    guard(ptr::null(),||{let h=handle(p)?;if len.is_null(){return Err((INVALID,"null length"));}if x as usize>=h.meta.width||y as usize>=h.meta.height||w as usize>h.meta.width-x as usize||ht as usize>h.meta.height-y as usize{return Err((INVALID,"RGBA region outside image"));}
+        // libtiff applies no flip for a source orientation it does not know.
+        let source=if (1..=8).contains(&source){source}else{orientation};
+        h.rgba_from(x as usize,y as usize,w as usize,ht as usize,source as usize,orientation as usize)?;let b=h.rendered.as_ref().ok_or((5,"missing RGBA output"))?;*len=b.len();Ok(b.as_ptr())})
 }
 
 #[no_mangle]

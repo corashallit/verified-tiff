@@ -132,6 +132,13 @@ class Consumers(unittest.TestCase):
   for bits,predict in [(8,2),(32,3),(64,3)]:
    for le,tiled in itertools.product([False,True],repeat=2):
     p=self.path/'codec.tif';p.write_bytes(scene(w=17,h=19,ch=3,bits=bits,fmt=3 if predict==3 else 1,codec=8,predict=predict,le=le,tiled=tiled)[0]);self.call('clone',p)
+ def test_rgba_caller_source_orientation(self):
+  # A caller-set TIFFRGBAImage.orientation replaces the stored Orientation tag.
+  for ch,photo in [(1,None),(3,None),(4,5)]:
+   out=[]
+   for orientation in [1,4,6]:
+    p=self.path/'oriented.tif';p.write_bytes(scene(w=17,h=19,ch=ch,photo=photo,orientation=orientation)[0]);out.append(self.call('rgba-as-stored',p))
+   with self.subTest(ch=ch):self.assertEqual(out[0],out[1]);self.assertEqual(out[0],out[2])
  def test_eight_bit_colormaps(self):
   # libtiff treats a map with no entry above 255 as 8-bit and others as 16-bit.
   for bits,scale in itertools.product([2,8],[1,257]):

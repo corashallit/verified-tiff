@@ -1005,7 +1005,7 @@ int TIFFRGBAImageGet(TIFFRGBAImage *img, uint32_t *out, uint32_t w,
   uint64_t skip=(uint64_t)(h-rows)*w;
   if(skip>PTRDIFF_MAX/sizeof(*out)){fail(img->tif,EFBIG,__func__,"RGBA raster overflow");return 0;}
   size_t n=0; const uint8_t *p=vt_region(img->tif->state,(uint32_t)img->col_offset,
-      (uint32_t)img->row_offset,w,rows,img->req_orientation,&n);
+      (uint32_t)img->row_offset,w,rows,img->orientation,img->req_orientation,&n);
   if (!p) {bridge_fail(img->tif,__func__); return 0;}
   size_t offset=(size_t)skip*sizeof(*out);
   if(n>SIZE_MAX-offset||!vt_commit((uint8_t*)out,offset+n,offset,p,n)){bridge_fail(img->tif,__func__);return 0;}return 1;

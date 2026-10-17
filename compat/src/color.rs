@@ -18,11 +18,11 @@ impl Handle {
         let Some(t)=find(&self.meta.tags,key)else{return Ok(defaults);};if t.count!=N{return Err((INVALID,"color metadata count"));}
         let mut a=defaults;for (i,v) in a.iter_mut().enumerate(){*v=metadata::real(&self.data,t.at+i*container::field_size(t.kind),t.kind,self.meta.le)? as f32;if !v.is_finite(){return Err((INVALID,"nonfinite color metadata"));}}Ok(a)
     }
-    pub fn rgba_color(&mut self,x:usize,y:usize,w:usize,h:usize,orientation:usize)->R<()>{
+    pub fn rgba_color(&mut self,x:usize,y:usize,w:usize,h:usize,source:usize,orientation:usize)->R<()>{
         if !(1..=8).contains(&orientation)||w==0||h==0{return Err((INVALID,"RGBA dimensions/orientation"));}
         let m=&self.meta;let width=m.width;let height=m.height;let bw=m.bw;let bh=m.bh;let bits=m.bits;let ch=m.ch;let planar=m.planar;let photo=m.photo;
         let alpha=m.extra.iter().position(|v|*v==1||*v==2).map(|i|(ch-m.extra.len()+i,m.extra[i]));
-        let (fx,fy)=geometry::orientation(m.orientation,orientation).map_err(err)?;
+        let (fx,fy)=geometry::orientation(source,orientation).map_err(err)?;
         let right=x.checked_add(w).ok_or((LIMIT,"RGBA extent"))?.min(width);let bottom=y.checked_add(h).ok_or((LIMIT,"RGBA extent"))?.min(height);
         if x>=right||y>=bottom{return Err((INVALID,"empty RGBA region"));}
         let across=(width-1)/bw+1;let row=m.row_bytes(bw)?;

@@ -36,6 +36,13 @@ int main(int argc,char **argv){
   else assert(!t&&errno==EINVAL);
   return 0;
  }
+ if(!strcmp(mode,"rgba-as-stored")){
+  /* Pillow sets the source orientation itself, then transposes afterwards. */
+  TIFF *t=TIFFOpen(argv[2],"r");assert(t);TIFFRGBAImage img;char e[1024];assert(TIFFRGBAImageBegin(&img,t,0,e));
+  img.orientation=ORIENTATION_TOPLEFT;img.req_orientation=ORIENTATION_TOPLEFT;size_t n=(size_t)img.width*img.height;
+  uint32_t *r=calloc(n,4);assert(r&&TIFFRGBAImageGet(&img,r,img.width,img.height));fwrite(r,4,n,stdout);
+  free(r);TIFFRGBAImageEnd(&img);TIFFClose(t);return 0;
+ }
  if(!strcmp(mode,"implied")){
   TIFF *t=TIFFOpen(argv[2],"r");assert(t);uint16_t compression=0,planar=0;uint32_t rows=7;
   assert(TIFFGetField(t,TIFFTAG_COMPRESSION,&compression)&&compression==COMPRESSION_NONE);
