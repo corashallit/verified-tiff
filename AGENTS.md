@@ -37,7 +37,8 @@ libtiff is only a test dependency. Its full C suite runs against libtiff,
 while 22 unchanged originals and nine transcoded upstream fixtures, plus
 four-codec generated profile matrices, exercise this reader. Do not confuse
 these claims. The smoke fuzzer is deterministic
-mutation testing, not a coverage-guided fuzz campaign.
+mutation testing, not a coverage-guided fuzz campaign. The coverage-guided
+C API targets, including a libtiff differential, run with scripts/fuzz-capi.sh.
 
 After relevant changes, update the profile, proof ledger, tests, and evidence
 together. Evidence is a recorded run, not a substitute for running the current

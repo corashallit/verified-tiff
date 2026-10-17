@@ -39,9 +39,10 @@ No system installation is performed by the build or test scripts.
 read modes `r`, `rb`, `rc`, `rC`, `rm`, `rM`, `rB`, `rD`, `rO`, `rh`, and
 combinations of these flags. `C` enables and `c` disables uncompressed
 single-strip chopping; it is enabled by default, with an approximately 8 KiB
-strip target. `B` requests the default MSB-first output. `h` reads only the
-header until directory selection. `D`/`O` are accepted optimization hints;
-strile metadata arrays are currently eager. No mode uses mmap, so `M` cannot
+strip target in whole YCbCr sampling rows. `B` requests the default MSB-first
+output. `h` reads only the header until directory selection. `D`/`O` apply
+libtiff's deferred-loading StripByteCounts repair rules; strile metadata
+arrays are currently eager. No mode uses mmap, so `M` cannot
 force it. `r+`, path/fd writing, LSB-output flags and unknown flags fail with
 `ENOSYS`. Callback writing has the restricted temporary-directory behavior
 described in [consumer compatibility](consumer-compatibility.md).
@@ -139,7 +140,9 @@ IEEE16/24/32/64. CCITT RLE is available through the new verified block primitive
 [native compatibility](native-compatibility.md) for the exact combinations.
 YCbCr JPEG native reads still require `JPEGCOLORMODE_RGB`; native subsampled
 JPEG YCbCr is unavailable. Non-JPEG YCbCr8 supports native sampling clumps
-through strips/tiles and RGBA conversion. LogLuv defaults to float32 XYZ;
+through strips/tiles and RGBA conversion. As in libtiff, separate YCbCr planes
+and YCbCr with other than three samples hold plain samples; their RGBA
+conversion is unsupported. LogLuv defaults to float32 XYZ;
 `SGILOGDATAFMT_16BIT` selects the encoded native components. Scanline reads of tiled images remain unsupported.
 
 Native reads retain storage order. RGBA honors source and requested
@@ -151,11 +154,15 @@ available image rows, the unused leading raster rows remain untouched, matching
 libtiff. `TIFFRGBAImageGet` accepts nonzero row/column offsets and smaller regions. Custom get/put callbacks remain
 unsupported. Output words are host-order `0xAABBGGRR`.
 
-Straight RGB alpha is premultiplied with nearest rounding; associated RGB is
-preserved. Gray8+A follows pinned libtiff's gray/alpha convention. Gray16 uses
-the high byte; RGB16 and its alpha use nearest scaling. Gray16+A preserves
-the gray and alpha high bytes, a deliberate difference from libtiff's opaque
-Gray16 display path; native alpha samples are exact. CMYK8/16 and CIELab8/16 presentation are supported, including separate planes.
+RGBA alpha is chosen as libtiff chooses it: only the first extra sample can
+be alpha, and an unspecified one is associated alpha when there are more than
+three samples. Straight RGB alpha is premultiplied with nearest rounding;
+associated RGB is preserved. Contiguous Gray8+A follows pinned libtiff's
+gray/alpha convention, and contiguous Gray16 draws the high byte opaque, alpha
+or not. Separate gray and alpha planes draw like RGB, and MinIsWhite planes are
+inverted, which libtiff 4.7.1 omits for separate planes. Palette, CMYK, CIELab
+and non-JPEG YCbCr draw opaque. RGB16 and its alpha use nearest scaling; native alpha
+samples are exact. CMYK8/16 and CIELab8/16 presentation are supported, including separate planes.
 Float/signed/LogLuv RGBA conversion is unsupported. JPEG retains the specified integer transform and nearest
 chroma; identity with every libjpeg configuration is not claimed.
 
@@ -210,6 +217,9 @@ LeakSanitizer is disabled because of the environment's tracing restrictions;
 no successful leak check is claimed. Suites include 2,000 deterministic C API
 mutations, native and RGBA oracle matrices, failure frames, ownership, options,
 metadata, lazy I/O and BigTIFF/SubIFDs. These are not coverage-guided fuzzing.
+`scripts/fuzz-capi.sh` adds coverage-guided libFuzzer targets over the same API,
+with ASan on both the C shim and the Rust adapter; `VTIFF_FUZZ_TARGET=capi_diff`
+also compares every result with the pinned libtiff where both succeed.
 The unchanged upstream 108-test suite tests upstream libtiff itself, not this
 adapter. Original core, corpus, Rust/Python and negative-proof gates still run.
 
