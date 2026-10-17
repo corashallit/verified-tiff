@@ -262,6 +262,7 @@ static uint32_t modeflags(const char *mode) {
     if (*p=='C') flags|=1;
     if (*p=='c') flags&=~1u;
     if (*p=='h') flags|=2;
+    if (*p=='D'||*p=='O') flags|=32; /* deferred strile loading */
   }
   if(*mode=='w'){flags=4;if(strchr(mode,'8'))flags|=8;if(strchr(mode,'b'))flags|=16;}
   return flags;

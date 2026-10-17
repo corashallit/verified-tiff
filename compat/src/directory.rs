@@ -50,19 +50,25 @@ pub fn page_offset(source:&mut Source,header:ct::Header,page:Option<u32>,l:&Limi
     }
     if page.is_some(){Err((INVALID,"directory not found"))}else{Ok(seen)}
 }
-pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer:bool)->R<(Buf<u8>,Buf<Tag>,u64)>{
+/// Directory bytes, and the bytes in the file the directory occupies: its
+/// header, table and out-of-line values, as libtiff counts them when it
+/// estimates StripByteCounts. None when an empty record has no type width.
+pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer:bool)->R<(Buf<u8>,Buf<Tag>,u64,Option<u64>)>{
     let mem=source.mem.clone();let le=header.little_endian;
     let (records,n,next)=table(source,header,off,l)?;
-    let ew=if header.big{20}else{12};let cw=if header.big{8}else{2};
+    let ew=if header.big{20}else{12};let cw=if header.big{8}else{2};let slot=if header.big{8}else{4};
+    let mut space=(n as u64).checked_mul(ew as u64).and_then(|v|v.checked_add(if header.big{16+8+8}else{8+2+4}));
     let mut entries=Buf::new(n,&mem)?;let mut total=0usize;
     for i in 0..n{
-        if records[i*ew..(i+1)*ew].iter().all(|v|*v==0){continue;}
+        if records[i*ew..(i+1)*ew].iter().all(|v|*v==0){space=None;continue;}
         let at=add64(off,(cw+i*ew) as u64)?;
         let e=ct::entry(&records[i*ew..i*ew+ew],at,header.big,le,source.len).map_err(err)?;
         if entries.iter().any(|t:&ct::Entry|t.tag==e.tag){return Err((INVALID,"duplicate directory tag"));}
         let len=usize::try_from(e.length).map_err(|_|(LIMIT,"metadata size overflow"))?;
         total=total.checked_add(if defer&&matches!(e.tag,273|279|324|325)&&e.count>1{0}else{len}).and_then(|v|v.checked_add(1)).ok_or((LIMIT,"metadata size overflow"))?;
-        if total>l.max_input{return Err((LIMIT,"metadata byte limit"));}entries.push(e)?;
+        if total>l.max_input{return Err((LIMIT,"metadata byte limit"));}
+        if e.length>slot{space=space.and_then(|v|v.checked_add(e.length));}
+        entries.push(e)?;
     }
     let mut data=Buf::new(total,&mem)?;let mut tags=Buf::new(entries.len(),&mem)?;
     for e in entries.iter(){
@@ -72,17 +78,22 @@ pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer
         }
         let raw=source.read(e.offset,e.length as usize)?;
         // Like libtiff, count the NUL added to an ASCII value that lacks one.
-        // InkNames keeps its exact payload.
-        let count=e.count as usize+usize::from(e.kind==2&&e.tag!=333&&raw.last().is_some_and(|v|*v!=0));
+        // InkNames keeps its exact payload. The estimate counts the NUL only
+        // for an anonymous value or InkNames (tif_dirread.c, TIFFFetchNormalTag).
+        let unterminated=e.kind==2&&raw.last().is_some_and(|v|*v!=0);
+        if unterminated&&(e.tag==333&&e.count<=65535||field_tags::KNOWN.binary_search(&e.tag).is_err()){
+            let out=|n:u64|if n>slot{n}else{0};space=space.and_then(|v|(v-out(e.length)).checked_add(out(e.length+1)));
+        }
+        let count=e.count as usize+usize::from(unterminated&&e.tag!=333);
         data.extend(&raw)?;data.push(0)?; // ASCII getters are always terminated.
         tags.push(Tag{key:e.tag,kind:e.kind,count,at,remote:None})?;
     }
-    Ok((data,tags,next))
+    Ok((data,tags,next,space))
 }
-pub fn metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,chop:bool)->R<(Buf<u8>,Meta)>{
+pub fn metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,chop:bool,deferred:bool)->R<(Buf<u8>,Meta)>{
     let mem=source.mem.clone();let le=header.little_endian;
-    let (data,tags,next)=raw_metadata(source,header,off,l,true)?;
-    assemble(data,tags,off,next,le,l,chop,&mem)
+    let (data,tags,next,space)=raw_metadata(source,header,off,l,true)?;
+    assemble(data,tags,off,next,le,l,chop,&mem,Some((source,space,deferred)))
 }
 /// Image-directory policy: validate the exact InkNames payload, never its
 /// extra storage terminator, and publish its actual count as NumberOfInks.
@@ -100,22 +111,27 @@ pub fn normalize_inks(data:&mut Buf<u8>,tags:&mut Buf<Tag>,le:bool,l:&Limits)->R
         let t=tags[i];
         if t.kind==3&&t.count==1&&value(data,t,0,le)?==count as u64{return Ok(());}
     }
-    set_short(data,tags,334,count,le,l)
+    set_ints(data,tags,334,3,&[count as u64],le,l)
 }
-/// Replace or insert a one-value SHORT field in candidate storage.
-fn set_short(data:&mut Buf<u8>,tags:&mut Buf<Tag>,key:u16,v:u16,le:bool,l:&Limits)->R<()>{
+/// Replace or insert a SHORT or LONG8 field in candidate storage.
+fn set_ints(data:&mut Buf<u8>,tags:&mut Buf<Tag>,key:u16,kind:u16,v:&[u64],le:bool,l:&Limits)->R<()>{
     let existing=tags.iter().position(|t|t.key==key);
     let n=tags.len()+usize::from(existing.is_none());
     if n>l.max_tags{return Err((LIMIT,"directory tag limit"));}
-    let end=data.len().checked_add(3).ok_or((LIMIT,"metadata size overflow"))?;
+    let w=if kind==3{2}else{8};
+    let end=product(v.len(),w)?.checked_add(data.len()).and_then(|e|e.checked_add(1)).ok_or((LIMIT,"metadata size overflow"))?;
     if end>l.max_input{return Err((LIMIT,"metadata byte limit"));}
     tags.reserve(n)?;data.reserve(end)?;
-    let at=data.len();data.extend(&if le{v.to_le_bytes()}else{v.to_be_bytes()})?;data.push(0)?;
-    let t=Tag{key,kind:3,count:1,at,remote:None};
+    let at=data.len();
+    for x in v{let b=if le{x.to_le_bytes()}else{x.to_be_bytes()};data.extend(if le{&b[..w]}else{&b[8-w..]})?;}
+    data.push(0)?;
+    let t=Tag{key,kind,count:v.len(),at,remote:None};
     if let Some(i)=existing{tags[i]=t;}else{tags.push(t)?;tags.sort_by_key(|t|t.key);}
     Ok(())
 }
-pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&Limits,chop:bool,mem:&Mem)->R<(Buf<u8>,Meta)>{
+/// `repair` is the source, directory space and deferred strile loading of a
+/// directory being read, as opposed to storage rebuilt after a field change.
+pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&Limits,chop:bool,mem:&Mem,repair:Option<(&mut Source,Option<u64>,bool)>)->R<(Buf<u8>,Meta)>{
     normalize_inks(&mut data,&mut tags,le,l)?;
     for key in [256,257,259,262,266,274,277,278,284,317,322,323]{
         if find(&tags,key).is_some_and(|t|t.count!=1){return Err((INVALID,"scalar image field count"));}
@@ -134,7 +150,6 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
     let (_,_,_,count)=geometry::grid(width,height,bw,bh,if planar==2{ch}else{1},l.max_segments).map_err(err)?;
     let offsets=Striles::new(&data,&tags,if tiled{324}else{273},le,l.max_segments,mem)?;
     let counts=Striles::new(&data,&tags,if tiled{325}else{279},le,l.max_segments,mem)?;
-    if offsets.len()!=count || counts.len()!=count{return Err((INVALID,"segment array count mismatch"));}
     // Pixel ranges and streams are deliberately checked only when requested.
     let map=small_array(&data,&tags,320,le,3*65536,&mem)?;
     let extra=small_array(&data,&tags,338,le,ch,&mem)?;
@@ -143,9 +158,16 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
     // per channel. From 8 bits up it reads as gray or RGB without them.
     let photo=if photo==3&&!(bits<=16&&map.len()==3usize<<bits){
         if bits<8{return Err((INVALID,"palette image without a usable ColorMap"));}
-        let fixed=if ch==3{2}else{1};set_short(&mut data,&mut tags,262,fixed,le,l)?;fixed as u64
+        let fixed=if ch==3{2}else{1};set_ints(&mut data,&mut tags,262,3,&[fixed],le,l)?;fixed
     }else{photo};
     let mut m=Meta{tags,off,next,le,width,height,ch,bits,format,photo,planar,rows,bw,bh,tiled,offsets,counts,map,extra,subifds,compression,predictor,orientation,fill};
+    if let Some((source,space,deferred))=repair{
+        if let Some(v)=m.estimated_counts(&data,source,space,deferred,count)?{
+            let key=if tiled{325}else{279};set_ints(&mut data,&mut m.tags,key,16,&v,le,l)?;
+            m.counts=Striles::new(&data,&m.tags,key,le,l.max_segments,mem)?;
+        }
+    }
+    if m.offsets.len()!=count || m.counts.len()!=count{return Err((INVALID,"segment array count mismatch"));}
     if chop && !tiled && planar==1 && compression==1 && photo!=6 && count==1{
         let row=m.row_bytes(width)?;let newrows=(8192/row).max(1);
         if newrows<rows{
@@ -162,6 +184,58 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
 impl Meta{
     pub fn row_bytes(&self,width:usize)->R<usize>{let ch=if self.planar==2{1}else{self.ch};product(product(width,ch)?,self.bits)?.checked_add(7).map(|n|n/8).ok_or((LIMIT,"row size overflow"))}
     pub fn per_plane(&self)->R<usize>{geometry::grid(self.width,self.height,self.bw,self.bh,1,usize::MAX).map(|v|v.2).map_err(err)}
+    /// Like libtiff's directory reader, estimate StripByteCounts that are
+    /// missing, that look wrong for a single strip, or that differ between the
+    /// first two of several uncompressed strips unless strile loading is
+    /// deferred (tif_dirread.c, EstimateStripByteCounts). OJPEG keeps its counts.
+    fn estimated_counts(&mut self,data:&[u8],source:&mut Source,space:Option<u64>,deferred:bool,count:usize)->R<Option<Buf<u64>>>{
+        if self.compression==6||self.offsets.len()!=count{return Ok(None);}
+        let file=source.len;let none=self.compression==1;
+        if find(&self.tags,if self.tiled{325}else{279}).is_none(){
+            if (self.planar==1&&count>1)||(self.planar==2&&count!=self.ch){return Err((INVALID,"missing StripByteCounts"));}
+        }else if self.counts.len()!=count{return Ok(None);
+        }else if count==1&&!self.tiled{
+            let (o,c)=(self.offsets.get(source,0)?,self.counts.get(source,0)?);
+            let looks_bad=o!=0&&(c==0||none&&(o<=file&&c>file-o||(self.lib_size(data,self.width,None)?).checked_mul(self.height as u64).is_none_or(|n|c<n)));
+            if !looks_bad{return Ok(None);}
+        }else{
+            if deferred||!(self.planar==1&&count>2&&none){return Ok(None);}
+            let (c0,c1)=(self.counts.get(source,0)?,self.counts.get(source,1)?);
+            if c0==c1||c0==0||c1==0{return Ok(None);}
+        }
+        let overflow=(LIMIT,"estimated StripByteCounts overflow");
+        let each=if !none{
+            let space=space.ok_or((INVALID,"directory record without a type"))?;
+            let left=file.saturating_sub(space);
+            if self.planar==2{left/self.ch as u64}else{left}
+        }else if self.tiled{self.lib_size(data,self.bw,Some(self.bh))?
+        }else{
+            let per=count/if self.planar==2{self.ch}else{1};
+            self.lib_size(data,self.width,None)?.checked_mul((self.height/per.max(1)) as u64).ok_or(overflow)?
+        };
+        let mut v=Buf::new(count,&source.mem)?;for _ in 0..count{v.push(each)?;}
+        if !none{
+            // The last strip cannot extend past the end of the file.
+            let last=self.offsets.get(source,count-1)?;
+            if last.checked_add(each).ok_or(overflow)?>file{v[count-1]=file.saturating_sub(last);}
+        }
+        Ok(Some(v))
+    }
+    /// libtiff's TIFFScanlineSize64 (`rows` None) or TIFFVTileSize64 for a
+    /// segment `w` samples wide, which count YCbCr sampling blocks. Like
+    /// libtiff, invalid subsampling or an overflow sizes it as 0.
+    fn lib_size(&self,data:&[u8],w:usize,rows:Option<usize>)->R<u64>{
+        if self.planar==1&&self.photo==6&&self.ch==3{
+            // libtiff ignores a pair it cannot read and uses the default.
+            let pair=match find(&self.tags,530){Some(t) if t.count==2=>(value(data,t,0,self.le)?,value(data,t,1,self.le)?),_=>(2,2)};
+            let (h,v)=if pair.0>0xffff||pair.1>0xffff{(2,2)}else{pair};
+            if !matches!(h,1|2|4)||!matches!(v,1|2|4){return Ok(0);}
+            let row=(w as u64).div_ceil(h).checked_mul(h*v+2).and_then(|n|n.checked_mul(self.bits as u64)).map(|n|n.div_ceil(8));
+            return Ok(match rows{None=>row.map(|r|r/v),Some(n)=>row.and_then(|r|r.checked_mul((n as u64).div_ceil(v)))}.unwrap_or(0));
+        }
+        let row=self.row_bytes(w)? as u64;
+        Ok(rows.map_or(Some(row),|n|row.checked_mul(n as u64)).unwrap_or(0))
+    }
     pub fn segment_rows(&self,k:usize)->R<usize>{if k>=self.offsets.len(){return Err((INVALID,"segment index out of range"));}Ok(if self.tiled{self.bh}else{self.bh.min(self.height-(k%self.per_plane()?)*self.bh)})}
 }
 

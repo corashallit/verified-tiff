@@ -33,7 +33,7 @@ impl Handle{
         let (data,meta)=if self.directory_kind!=0||self.writing{
             if self.directory_kind==0{normalize_inks(&mut data,&mut tags,self.meta.le,&self.limits)?;}
             let (_,mut m)=empty_metadata(&self.source.mem,self.header)?;m.tags=tags;m.off=self.meta.off;m.next=self.meta.next;(data,m)
-        }else{assemble(data,tags,self.meta.off,self.meta.next,self.meta.le,&self.limits,self.chop,&self.source.mem)?};
+        }else{assemble(data,tags,self.meta.off,self.meta.next,self.meta.le,&self.limits,self.chop,&self.source.mem,None)?};
         self.converted=Buf::new(0,&self.source.mem)?;self.data=data;self.meta=meta;self.stream=None;self.cache=None;self.rendered=None;Ok(())
     }
     fn typed(&mut self,key:u32,kind:u16)->R<Option<(*const u8,usize)>>{
@@ -79,7 +79,7 @@ pub unsafe extern "C" fn vt_typed(p:*mut c_void,key:u32,kind:u16,out:*mut *const
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_custom_dir(p:*mut c_void,off:u64,kind:u32)->i32{
-    guard(0,||{let h=handle(p)?;let (data,tags,next)=raw_metadata(&mut h.source,h.header,off,&h.limits,false)?;
+    guard(0,||{let h=handle(p)?;let (data,tags,next,_)=raw_metadata(&mut h.source,h.header,off,&h.limits,false)?;
         let (_,mut meta)=empty_metadata(&h.source.mem,h.header)?;meta.tags=tags;meta.off=off;meta.next=next;
         let converted=Buf::new(0,&h.source.mem)?;
         h.converted=converted;h.meta=meta;h.data=data;h.page=u32::MAX;h.directory_kind=kind;h.stream=None;h.cache=None;h.rendered=None;Ok(1)})

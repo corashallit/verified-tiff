@@ -182,6 +182,42 @@ class Consumers(unittest.TestCase):
   tags=[(256,4,[16]),(257,4,[0x80000008]),(258,3,[8,8]),(259,3,[1]),(262,3,[1]),(277,3,[2]),(278,4,[1]),(284,3,[2]),
    (322,4,[16]),(323,4,[0x7ffffff0]),(324,4,('SEG',[b'\0']*4)),(325,4,[1]*4)]
   self.assertEqual(self.dump(assemble([tags])[0],'sizes').split()[0],b'0')
+ def test_estimated_strip_byte_counts(self):
+  # libtiff estimates segment byte counts that are missing or implausible:
+  # from the geometry when uncompressed, else from the file size less the
+  # directory. Deferred strile loading skips the check of several strips.
+  def edit(tags,key,v):return [t for t in tags if t[0]!=key]+([] if v is None else [(key,4,v)])
+  cases=[]
+  for codec,big in [(1,False),(5,False),(5,True),(8,False)]:
+   one=scene(w=17,h=3,codec=codec,big=big)[3];tile=scene(w=16,h=16,codec=codec,big=big,tiled=True)[3]
+   planes=scene(w=17,h=3,codec=codec,big=big,separate=True)[3];many=scene(w=17,h=19,codec=codec,big=big)[3]
+   for v in [None,[0],[5],[100],[153],[10**6]]:cases.append((edit(one,279,v),big))
+   cases+=[(edit(tile,325,None),big),(edit(tile,325,[0]),big),(edit(planes,279,None),big)]
+   for v in [[154,153]+[153]*5,[0,7]+[153]*5,[153]*6+[51]]:cases.append((edit(many,279,v),big))
+  # Rows of YCbCr samples are counted in sampling blocks; an unreadable pair
+  # takes the default.
+  for sub in [[2,2],[4,1],[2]]:
+   cases.append((edit(scene(w=17,h=3,photo=6,extra=[(530,3,sub)])[3],279,None),False))
+  # The directory size includes the NUL libtiff adds to an anonymous ASCII
+  # value that lacks one, but not to a known ASCII field.
+  for tag,value in itertools.product([65000,305],[b'abc',b'abcd',b'abcdefgh',b'abc\0']):
+   cases.append((edit(scene(w=17,h=3,codec=5,extra=[(tag,2,value)])[3],279,None),False))
+  p=self.path/'in.tif'
+  for i,(tags,big) in enumerate(cases):
+   with self.subTest(i=i):
+    blob=assemble([tags],big)[0];self.dump(blob,'counts')
+    if (262,3,[6]) in tags:continue
+    # Pixels read the same, or fail in both, with the counts as estimated.
+    got=[]
+    for exe in ['dump','dump-libtiff']:
+     r=subprocess.run([str(OUT/exe),str(p),'native',str(self.path/'out'),'0','1'],capture_output=True)
+     got.append(b'' if r.returncode else (self.path/'out').read_bytes())
+    self.assertEqual(*got)
+  # Several contiguous segments without counts fail to open in both.
+  for tags in [scene(w=17,h=19)[3],scene(w=17,h=19,tiled=True)[3]]:
+   p.write_bytes(assemble([edit(edit(tags,279,None),325,None)])[0])
+   for exe in ['dump','dump-libtiff']:
+    self.assertEqual(subprocess.run([str(OUT/exe),str(p),'counts',str(self.path/'out')],capture_output=True).returncode,3)
  def test_unknown_tag_counts(self):
   # libtiff counts the NUL it adds to an unterminated ASCII value, and an
   # empty value has no data pointer.

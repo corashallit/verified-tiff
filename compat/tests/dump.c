@@ -106,6 +106,19 @@ int main(int argc, char **argv) {
     for (size_t i = 0; ok == 1 && i < (size_t)n * TIFFFieldSetGetSize(field); i++)
       fprintf(f, " %02x", d[i]);
     fputc('\n', f);
+  } else if (!strcmp(argv[2], "counts")) {
+    /* Segment byte counts as read, then with deferred and on-demand strile
+     * loading. */
+    for (int pass = 0; pass < 3; pass++) {
+      TIFF *d = pass ? TIFFOpen(argv[1], pass == 1 ? "rD" : "rO") : t;
+      assert(d);
+      uint32_t n = TIFFIsTiled(d) ? TIFFNumberOfTiles(d) : TIFFNumberOfStrips(d);
+      for (uint32_t i = 0; i < n; i++)
+        fprintf(f, " %llu", (unsigned long long)TIFFGetStrileByteCount(d, i));
+      fputc('\n', f);
+      if (pass)
+        TIFFClose(d);
+    }
   } else if (!strcmp(argv[2], "sizes")) {
     /* Strip queries are defined for tiled images too. */
     fprintf(f, "%u %llu %llu %llu %u\n", TIFFNumberOfStrips(t),

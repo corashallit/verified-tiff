@@ -61,6 +61,7 @@ fn product(a: usize, b: usize) -> R<usize> {
 }
 mod storage;
 mod stream;
+mod field_tags;
 mod directory;
 mod decoder;
 mod lerc;
@@ -81,7 +82,7 @@ struct Meta{
 }
 struct Handle{
     source:Source,header:container::Header,data:Buf<u8>,meta:Meta,page:u32,limits:Limits,
-    work:usize,chain_steps:usize,chain:Buf<u64>,stream:Option<stream::Cached>,cache:Option<(usize,Buf<u8>)>,rendered:Option<Buf<u8>>,jpeg_rgb:bool,logluv16:bool,chop:bool,converted:Buf<metadata::Converted>,directory_kind:u32,writing:bool,
+    work:usize,chain_steps:usize,chain:Buf<u64>,stream:Option<stream::Cached>,cache:Option<(usize,Buf<u8>)>,rendered:Option<Buf<u8>>,jpeg_rgb:bool,logluv16:bool,chop:bool,deferred:bool,converted:Buf<metadata::Converted>,directory_kind:u32,writing:bool,
 }
 impl Handle{
     fn open(mut source:Source,output:usize,work:usize,flags:u32)->R<Self>{
@@ -89,16 +90,16 @@ impl Handle{
         let writing=flags&4!=0;
         let header=if writing{container::Header{little_endian:flags&16==0,big:flags&8!=0,first_ifd:0}}else{let b=source.read(0,source.len.min(16) as usize)?;container::header(&b).map_err(err)?};
         let limits=Limits{max_input:source.input,max_output:output,..Limits::conservative()};
-        let chop=flags&1!=0;
-        let (data,meta)=if writing||flags&2!=0{empty_metadata(&source.mem,header)?}else{metadata(&mut source,header,header.first_ifd,&limits,chop)?};
+        let chop=flags&1!=0;let deferred=flags&32!=0;
+        let (data,meta)=if writing||flags&2!=0{empty_metadata(&source.mem,header)?}else{metadata(&mut source,header,header.first_ifd,&limits,chop,deferred)?};
         let converted=Buf::new(0,&source.mem)?;
         let mut chain=Buf::new(1,&source.mem)?;if meta.off!=0{chain.push(meta.off)?;}
         // Like libtiff, a header-only open has no current directory yet.
         let page=if !writing&&flags&2!=0{u32::MAX}else{0};
-        Ok(Self{writing,converted,directory_kind:0,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop})
+        Ok(Self{writing,converted,directory_kind:0,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
     }
     fn set_offset(&mut self,off:u64,page:u32)->R<()>{
-        let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop)?;
+        let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop,self.deferred)?;
         self.converted=Buf::new(0,&self.source.mem)?;self.directory_kind=0;self.data=data;self.meta=meta;self.page=page;self.chain_steps=0;self.stream=None;self.cache=None;self.rendered=None;self.jpeg_rgb=false;self.logluv16=false;Ok(())
     }
     fn source_channels(&self)->R<usize>{Ok(self.meta.ch)}

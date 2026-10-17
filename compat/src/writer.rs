@@ -21,7 +21,7 @@ impl Handle{
         // pointers remain stable until a successful mutation/selection.
         let mut data=Buf::new(self.data.len(),&self.source.mem)?;data.extend(&self.data)?;
         let mut tags=Buf::new(self.meta.tags.len(),&self.source.mem)?;tags.extend(&self.meta.tags)?;
-        let (data,meta)=assemble(data,tags,0,0,le,&self.limits,false,&self.source.mem)?;
+        let (data,meta)=assemble(data,tags,0,0,le,&self.limits,false,&self.source.mem,None)?;
         self.data=data;self.meta=meta;self.converted=Buf::new(0,&self.source.mem)?;Ok(())
     }
     fn directory_bytes(&mut self)->R<()>{
