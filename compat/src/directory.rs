@@ -168,7 +168,8 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
     for key in [258,339]{if let Some(t)=find(&tags,key){if t.count!=1 && t.count!=ch{return Err((INVALID,"per-sample metadata count"));}for i in 1..t.count{if value(&data,t,i,le)?!=value(&data,t,0,le)?{return Err((NOTIMPL,"mixed sample widths/formats"));}}}}
     let tiled=find(&tags,324).is_some();let rows=sc(278,u32::MAX as u64)? as usize;
     let bw=if tiled{sc(322,0)? as usize}else{width};let bh=if tiled{sc(323,0)? as usize}else{rows.min(height)};
-    if bw==0 || bh==0 || bw>u32::MAX as usize || bh>u32::MAX as usize{return Err((INVALID,"invalid strip/tile geometry"));}
+    // libtiff rejects a RowsPerStrip of 0 even on tiled images.
+    if rows==0 || bw==0 || bh==0 || bw>u32::MAX as usize || bh>u32::MAX as usize{return Err((INVALID,"invalid strip/tile geometry"));}
     let (_,_,_,count)=geometry::grid(width,height,bw,bh,if planar==2{ch}else{1},l.max_segments).map_err(err)?;
     let offsets=Striles::new(&data,&tags,if tiled{324}else{273},le,l.max_segments,mem)?;
     let counts=Striles::new(&data,&tags,if tiled{325}else{279},le,l.max_segments,mem)?;
@@ -181,11 +182,14 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
         if bits<8{return Err((INVALID,"palette image without a usable ColorMap"));}
         let fixed=if ch==3{2}else{1};set_ints(&mut data,&mut tags,262,3,&[fixed],le,l)?;fixed
     }else{photo};
-    let mut m=Meta{tags,off,next,le,width,height,ch,bits,format,photo,planar,rows,bw,bh,tiled,offsets,counts,map,extra,subifds,compression,predictor,orientation,fill};
+    let rows_set=find(&tags,278).is_some();
+    let mut m=Meta{tags,off,next,le,width,height,ch,bits,format,photo,planar,rows,bw,bh,tiled,tile_rows:rows,rows_set,offsets,counts,map,extra,subifds,compression,predictor,orientation,fill};
     if let Some((source,space,deferred))=repair{
         if let Some(v)=m.estimated_counts(&data,source,space,deferred,count)?{
             let key=if tiled{325}else{279};set_ints(&mut data,&mut m.tags,key,16,&v,le,l)?;
             m.counts=Striles::new(&data,&m.tags,key,le,l.max_segments,mem)?;
+            // libtiff then assumes one strip without RowsPerStrip.
+            if !m.rows_set{m.rows=height;}
         }
     }
     if m.offsets.len()!=count || m.counts.len()!=count{return Err((INVALID,"segment array count mismatch"));}
@@ -194,13 +198,13 @@ pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&L
         let block=if photo==6{m.subsampling(&data)?.1 as usize}else{1};
         let bytes=m.lib_size(&data,width,Some(block))?;
         let (newrows,stride)=if bytes>8192{(block,bytes)}else{let k=8192/bytes.max(1);(product(k as usize,block)?,k*bytes)};
-        if bytes>0&&newrows<rows{
+        if bytes>0&&newrows<m.rows{
             let n=(height-1)/newrows+1;
             if n>l.max_segments{return Err((LIMIT,"chopped strip count limit"));}
             let pos=m.offsets.values[0];let left=m.counts.values[0];
             m.offsets=Striles::generated(n,pos,stride,left,false,mem)?;
             m.counts=Striles::generated(n,pos,stride,left,true,mem)?;
-            m.rows=newrows;m.bh=newrows.min(height);
+            m.rows=newrows;m.tile_rows=newrows;m.rows_set=true;m.bh=newrows.min(height);
         }
     }
     Ok((data,m))

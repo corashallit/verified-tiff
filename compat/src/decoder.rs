@@ -79,7 +79,7 @@ impl Handle{
                 self.native_ok()?;
                 if self.ycbcr_raw()&&self.sampling()?.1>1{return Err((NOTIMPL,"vertically subsampled YCbCr requires strip/tile reads"));}
                 let m=&self.meta;if m.tiled{return Err((NOTIMPL,"scanline reads on tiled images not implemented"));}
-                if a>=m.height || (m.planar==2 && b>=m.ch) || (m.planar==1 && b!=0){return Err((INVALID,"scanline row/sample out of range"));}
+                if a>=m.height || (m.planar==2 && b>=m.ch){return Err((INVALID,"scanline row/sample out of range"));}
                 let row=self.raw_row(m.width)?;let idx=a/m.bh+if m.planar==2{b*m.per_plane()?}else{0};let within=(a%m.bh)*row;
                 let out=self.native_range(idx,within,row,&mut budget)?;self.rendered=Some(out);
             }

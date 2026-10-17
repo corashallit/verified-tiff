@@ -268,6 +268,21 @@ class Consumers(unittest.TestCase):
     per=rows or 19;n=-(-19//per)*(3 if separate else 1);seg=bytes(per*17*(1 if separate else 3))
     tags=[t for t in tags if t[0] not in (273,278,279)]+[(273,4,('SEG',[seg]*n)),(279,4,[len(seg)]*n)]+([(278,4,[rows])] if rows else [])
    with self.subTest(tiled=tiled,separate=separate,sub=sub,rows=rows):self.dump(assemble([tags])[0],'sizes')
+ def test_strip_and_tile_indexes(self):
+  # libtiff computes strip indexes on tiled images and tile indexes on strip
+  # images, ignores the sample of a contiguous image, and reads RowsPerStrip
+  # back only once it is set; its byte count estimate implies one strip.
+  for tiled,separate,rows in itertools.product([False,True],[False,True],[None,4,40]):
+   tags=scene(w=17,h=19,ch=3,tiled=tiled,separate=separate)[3]
+   if not tiled:
+    per=min(rows or 19,19);n=-(-19//per)*(3 if separate else 1);seg=bytes(per*17*(1 if separate else 3))
+    tags=[t for t in tags if t[0] not in (273,278,279)]+[(273,4,('SEG',[seg]*n)),(279,4,[len(seg)]*n)]
+   if rows:tags=[t for t in tags if t[0]!=278]+[(278,4,[rows])]
+   with self.subTest(tiled=tiled,separate=separate,rows=rows):self.dump(assemble([tags])[0],'layout')
+  for count,h in [(1,257),(257,257),(0,9000)]:
+   tags=[(256,4,[1]),(257,4,[h]),(258,3,[8]),(259,3,[1]),(262,3,[1]),(273,4,('SEG',[bytes(h)])),(279,4,[count])]
+   with self.subTest(count=count,h=h):
+    for mode in ['layout','sizes','counts']:self.dump(assemble([tags])[0],mode)
  def test_unknown_tag_counts(self):
   # libtiff counts the NUL it adds to an unterminated ASCII value, and an
   # empty value has no data pointer.

@@ -179,7 +179,7 @@ static void metadata_test(void){
 }
 static void basic_read_test(void){
  TIFF*t=gray();unsigned char b[16384];uint32_t r[4096];assert(TIFFRasterScanlineSize64(t)==TIFFScanlineSize64(t));assert(TIFFRasterScanlineSize(t)>0&&TIFFVStripSize(t,1)>0&&TIFFVStripSize64(t,1)>0);assert(TIFFRawStripSize(t,0)>0);
- assert(TIFFComputeStrip(t,UINT32_MAX,0)==UINT32_MAX&&TIFFComputeStrip(t,0,1)==UINT32_MAX);assert(TIFFReadRawTile(t,0,b,1)==-1);
+ assert(TIFFComputeStrip(t,UINT32_MAX,0)==UINT32_MAX&&TIFFComputeStrip(t,0,1)==0);assert(TIFFReadRawTile(t,0,b,1)==-1);
  assert(TIFFReadEncodedStrip(t,0,b,-2)==-1&&TIFFReadEncodedStrip(t,0,NULL,1)==-1);assert(!TIFFReadRGBAImage(t,1,1,NULL,0));
  TIFFRGBAImage img;char msg[1024];assert(!TIFFRGBAImageBegin(NULL,t,0,msg));assert(TIFFRGBAImageBegin(&img,t,0,msg));img.get=NULL;assert(!TIFFRGBAImageGet(&img,r,1,1));img.get=TIFFRGBAImageGet;img.put.any=(void*)1;assert(!TIFFRGBAImageGet(&img,r,1,1));img.put.any=NULL;img.row_offset=-1;assert(!TIFFRGBAImageGet(&img,r,1,1));img.row_offset=0;img.col_offset=-1;assert(!TIFFRGBAImageGet(&img,r,1,1));img.col_offset=0;assert(!TIFFRGBAImageGet(&img,NULL,1,1));img.row_offset=(int)img.height;assert(!TIFFRGBAImageGet(&img,r,1,1));TIFFRGBAImageEnd(&img);TIFFClose(t);
  t=TIFFOpen(tile_path,"rc");assert(t);assert(TIFFTileRowSize64(t)>0&&TIFFTileRowSize(t)>0&&TIFFVTileSize64(t,1)>0&&TIFFVTileSize(t,1)>0);assert(TIFFReadTile(t,b,0,0,0,0)>0);assert(TIFFCurrentTile(t)==0);assert(TIFFReadTile(t,b,0,0,1,0)==-1);assert(TIFFReadRawStrip(t,0,b,1)==-1);TIFFClose(t);
@@ -317,7 +317,7 @@ static void reader_misc_test(void){
  inject("vt_read",1);assert(!TIFFReadRGBAImage(t,UINT32_MAX,UINT32_MAX,pixels,0));fault_len=SIZE_MAX;assert(!TIFFReadRGBAImage(t,1,100,pixels,0));clear_fault();
  TIFFRGBAImage img;assert(TIFFRGBAImageOK(t,NULL)&&TIFFRGBAImageBegin(&img,t,0,NULL));TIFF *save=img.tif;img.tif=NULL;assert(!TIFFRGBAImageGet(&img,pixels,1,1));img.tif=save;assert(!TIFFRGBAImageGet(&img,pixels,UINT32_MAX,UINT32_MAX));inject("vt_region",1);fault_len=SIZE_MAX;assert(!TIFFRGBAImageGet(&img,pixels,1,100));clear_fault();
  assert(!TIFFReadFromUserBuffer(t,0,bytes,-1,bytes,1));assert(!TIFFReadFromUserBuffer(t,0,bytes,1,bytes,-1));assert(!TIFFReadFromUserBuffer(t,0,NULL,1,bytes,1));assert(!TIFFReadFromUserBuffer(t,0,bytes,1,NULL,1));(void)TIFFReadFromUserBuffer(t,0,NULL,0,NULL,0);
- TIFFClose(t);t=TIFFOpen(tile_path,"rc");assert(t);assert(TIFFIsByteSwapped(t));assert(TIFFComputeStrip(t,0,0)==UINT32_MAX);assert(!TIFFCheckTile(t,UINT32_MAX,0,0,0)&&!TIFFCheckTile(t,0,UINT32_MAX,0,0)&&!TIFFCheckTile(t,0,0,0,1));assert(TIFFReadEncodedStrip(t,0,bytes,0)==-1);TIFFClose(t);
+ TIFFClose(t);t=TIFFOpen(tile_path,"rc");assert(t);assert(TIFFIsByteSwapped(t));assert(TIFFComputeStrip(t,0,0)==0);assert(!TIFFCheckTile(t,UINT32_MAX,0,0,0)&&!TIFFCheckTile(t,0,UINT32_MAX,0,0)&&TIFFCheckTile(t,0,0,0,1));assert(TIFFReadEncodedStrip(t,0,bytes,0)==-1);TIFFClose(t);
  assert(!TIFFIsTiled(NULL));unknown_warnings(NULL);
 }
 static unsigned print_callbacks;
@@ -355,7 +355,7 @@ static void getter_defaults_test(void){
 }
 static int empty_extras(TIFF*t,uint32_t k,va_list a){if(k==TIFFTAG_EXTRASAMPLES){*va_arg(a,uint16_t*)=0;*va_arg(a,uint16_t**)=NULL;return 1;}return default_getfield(t,k,a);}
 static void final_branches_test(const char *planar){
- assert(!writemode(NULL));TIFF*t=gray();assert(TIFFFlush(t));assert(!TIFFCheckTile(t,0,0,0,0));uint8_t b[16384];assert(TIFFReadRawStrip(t,0,b,0)==0);
+ assert(!writemode(NULL));TIFF*t=gray();assert(TIFFFlush(t));assert(TIFFCheckTile(t,0,0,0,0)&&TIFFComputeTile(t,0,0,0,0)==0);uint8_t b[16384];assert(TIFFReadRawStrip(t,0,b,0)==0);
  float*p=NULL;assert(!TIFFGetFieldDefaulted(t,TIFFTAG_PRIMARYCHROMATICITIES,&p));
  TIFFRGBAImage img;t->methods.vgetfield=empty_extras;assert(TIFFRGBAImageBegin(&img,t,0,NULL)&&img.alpha==0);t->methods.vgetfield=default_getfield;
  inject("vt_scalar",0);fault_tag=TIFFTAG_PHOTOMETRIC;assert(TIFFRGBAImageBegin(&img,t,0,NULL)&&img.photometric==PHOTOMETRIC_MINISBLACK);clear_fault();

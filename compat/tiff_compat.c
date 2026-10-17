@@ -813,8 +813,10 @@ tmsize_t TIFFRawStripSize(TIFF *t, uint32_t k) {
 int TIFFCheckTile(TIFF *t, uint32_t x, uint32_t y, uint32_t z, uint16_t s) {
   if (!valid(t, __func__))
     return 0;
-  if (!TIFFIsTiled(t) || x >= info(t, 0) || y >= info(t, 1) || z != 0 ||
-      (info(t, 11) == 2 ? s >= info(t, 12) : s != 0)) {
+  /* Like libtiff, a strip image's tiles are its strips, and a contiguous
+   * image ignores the sample. */
+  if (x >= info(t, 0) || y >= info(t, 1) || z != 0 ||
+      (info(t, 11) == 2 && s >= info(t, 12))) {
     fail(t, EINVAL, __func__, "invalid tile coordinates/plane");
     return 0;
   }
@@ -832,13 +834,15 @@ uint32_t TIFFComputeTile(TIFF *t, uint32_t x, uint32_t y, uint32_t z,
 uint32_t TIFFComputeStrip(TIFF *t, uint32_t row, uint16_t s) {
   if (!valid(t, __func__))
     return UINT32_MAX;
-  if (TIFFIsTiled(t) || row >= info(t, 1) ||
-      (info(t, 11) == 2 ? s >= info(t, 12) : s != 0)) {
+  if (row >= info(t, 1) || (info(t, 11) == 2 && s >= info(t, 12))) {
     fail(t, EINVAL, __func__, "invalid strip row/plane");
     return UINT32_MAX;
   }
-  uint64_t per = (info(t, 1) - 1) / info(t, 9) + 1;
-  return (uint32_t)(row / info(t, 9) + (info(t, 11) == 2 ? s * per : 0));
+  /* Like libtiff, a tiled image's strips follow RowsPerStrip, and planes are
+   * a plane's strips or tiles apart. */
+  uint64_t rows = TIFFIsTiled(t) ? info(t, 10) : info(t, 9);
+  uint64_t per = info(t, 7) / (info(t, 11) == 2 ? info(t, 12) : 1);
+  return (uint32_t)(row / rows + (info(t, 11) == 2 ? s * per : 0));
 }
 static tmsize_t read_bytes(TIFF *t, unsigned kind, uint32_t a, uint32_t b,
                            void *buf, tmsize_t size) {

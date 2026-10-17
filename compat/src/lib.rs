@@ -77,6 +77,8 @@ struct Tag{key:u16,kind:u16,count:usize,at:usize,remote:Option<u64>}
 struct Meta{
     tags:Buf<Tag>,off:u64,next:u64,le:bool,width:usize,height:usize,ch:usize,bits:usize,
     format:u16,photo:u64,planar:usize,rows:usize,bw:usize,bh:usize,tiled:bool,
+    // libtiff's tile length for strip images, and whether RowsPerStrip is set.
+    tile_rows:usize,rows_set:bool,
     offsets:Striles,counts:Striles,map:Buf<u16>,extra:Buf<u16>,subifds:Buf<u64>,
     compression:u16,predictor:u16,orientation:usize,fill:u16,
 }
@@ -116,7 +118,7 @@ impl Handle{
     }
 }
 fn empty_metadata(mem:&Mem,header:container::Header)->R<(Buf<u8>,Meta)>{
-    Ok((Buf::new(0,mem)?,Meta{tags:Buf::new(0,mem)?,off:0,next:header.first_ifd,le:header.little_endian,width:0,height:0,ch:1,bits:1,format:1,photo:1,planar:1,rows:0,bw:0,bh:0,tiled:false,offsets:Striles::empty(mem)?,counts:Striles::empty(mem)?,map:Buf::new(0,mem)?,extra:Buf::new(0,mem)?,subifds:Buf::new(0,mem)?,compression:1,predictor:1,orientation:1,fill:1}))
+    Ok((Buf::new(0,mem)?,Meta{tags:Buf::new(0,mem)?,off:0,next:header.first_ifd,le:header.little_endian,width:0,height:0,ch:1,bits:1,format:1,photo:1,planar:1,rows:0,bw:0,bh:0,tile_rows:0,rows_set:false,tiled:false,offsets:Striles::empty(mem)?,counts:Striles::empty(mem)?,map:Buf::new(0,mem)?,extra:Buf::new(0,mem)?,subifds:Buf::new(0,mem)?,compression:1,predictor:1,orientation:1,fill:1}))
 }
 // Safety: only the C shim can call these hidden exports. A live handle must
 // be exclusively accessed for the duration of a call; C owns its lifetime.
@@ -191,7 +193,10 @@ pub unsafe extern "C" fn vt_scalar(p: *mut c_void, key: u32, defaulted: i32, out
             } else {
                 0
             }
-        } else if key==278 && m.rows>0 {m.rows as u64} else {
+        } else if key==278 && m.rows>0 {
+            if !m.rows_set && defaulted==0 {return Ok(0);}
+            m.rows as u64
+        } else {
             let Some(t) = find(&m.tags, key as u16) else {
                 // libtiff's directory reader always sets these two.
                 let implied = !h.writing && h.directory_kind == 0 && matches!(key, 259 | 284);
@@ -300,7 +305,7 @@ pub unsafe extern "C" fn vt_size(p: *mut c_void, kind: u32, rows: u32) -> i64 {
             1
         } else if rows == u32::MAX {
             // Like libtiff, a tiled image's strip spans RowsPerStrip rows.
-            if kind == 1 && m.tiled { m.rows.min(m.height) } else if kind == 3 && !m.tiled { m.rows } else { m.bh }
+            if kind == 1 && m.tiled { m.rows.min(m.height) } else if kind == 3 && !m.tiled { m.tile_rows } else { m.bh }
         } else {
             rows as usize
         };

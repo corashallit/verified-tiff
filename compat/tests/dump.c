@@ -133,6 +133,18 @@ int main(int argc, char **argv) {
       if (pass)
         TIFFClose(d);
     }
+  } else if (!strcmp(argv[2], "layout")) {
+    /* RowsPerStrip as set and defaulted, then strip and tile indexes. */
+    uint32_t rows = 0, fallback = 0;
+    int set = TIFFGetField(t, TIFFTAG_ROWSPERSTRIP, &rows);
+    TIFFGetFieldDefaulted(t, TIFFTAG_ROWSPERSTRIP, &fallback);
+    fprintf(f, "%d %u %u |", set, rows, fallback);
+    for (uint16_t s = 0; s < 2 && (s < ch || planar == 1); s++) {
+      fprintf(f, " %u %u", TIFFComputeStrip(t, 0, s), TIFFComputeStrip(t, h - 1, s));
+      fprintf(f, " %d %u", TIFFCheckTile(t, w - 1, h - 1, 0, s),
+              TIFFComputeTile(t, w - 1, h - 1, 0, s));
+    }
+    fputc('\n', f);
   } else if (!strcmp(argv[2], "sizes")) {
     /* Strip queries are defined for tiled images, and tile queries for
      * strip images. */
