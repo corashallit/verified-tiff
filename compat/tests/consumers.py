@@ -156,6 +156,14 @@ class Consumers(unittest.TestCase):
   # Single-segment codecs decode a derived view that is larger than a tiny file.
   for name in ['fax-g3.tif','fax-g4-tile.tif','jpeg-gray.tif','jpeg-tile.tif','ojpeg-tables.tif','webp-tile.tif','logluv-strip.tif']:
    self.call('exact-limit',ROOT/'tests/fixtures'/name)
+ def test_strip_queries_on_tiled_images(self):
+  # libtiff answers strip counts and sizes from RowsPerStrip on tiled images too.
+  for name in ['acceptance-gray16.tif','deflate-planar16.tif','lzw-rgb-tile.tif','rgb16.tif','planar-alpha.tif','float64-planar.tif','palette4.tif','fax-g4-tile.tif','jpeg-tile.tif','jpeg-ycbcr.tif']:
+   with self.subTest(name=name):self.dump((ROOT/'tests/fixtures'/name).read_bytes(),'sizes')
+  # One-row strips of a tall two-plane image overflow libtiff's 32-bit count.
+  tags=[(256,4,[16]),(257,4,[0x80000008]),(258,3,[8,8]),(259,3,[1]),(262,3,[1]),(277,3,[2]),(278,4,[1]),(284,3,[2]),
+   (322,4,[16]),(323,4,[0x7ffffff0]),(324,4,('SEG',[b'\0']*4)),(325,4,[1]*4)]
+  self.assertEqual(self.dump(assemble([tags])[0],'sizes').split()[0],b'0')
  def test_read_side_sample_format(self):
   for bits,le,big in itertools.product([32,64],[False,True],[False,True]):
    p=self.path/'float.tif';p.write_bytes(scene(bits=bits,fmt=3,le=le,big=big,codec=8)[0]);self.call('readset',p)

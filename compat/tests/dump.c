@@ -96,6 +96,12 @@ int main(int argc, char **argv) {
         assert(fwrite(p, 1, n, f) == n);
       }
     free(p);
+  } else if (!strcmp(argv[2], "sizes")) {
+    /* Strip queries are defined for tiled images too. */
+    fprintf(f, "%u %llu %llu %llu %u\n", TIFFNumberOfStrips(t),
+            (unsigned long long)TIFFStripSize64(t),
+            (unsigned long long)TIFFVStripSize64(t, 1),
+            (unsigned long long)TIFFScanlineSize64(t), TIFFNumberOfTiles(t));
   } else if (scan) {
     tmsize_t n = TIFFScanlineSize(t);
     if (n <= 0 || n > 67108864) {

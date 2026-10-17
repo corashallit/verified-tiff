@@ -286,7 +286,8 @@ pub unsafe extern "C" fn vt_size(p: *mut c_void, kind: u32, rows: u32) -> i64 {
         let n = if kind == 0 || kind == 2 {
             1
         } else if rows == u32::MAX {
-            m.bh
+            // Like libtiff, a tiled image's strip spans RowsPerStrip rows.
+            if kind == 1 && m.tiled { m.rows.min(m.height) } else { m.bh }
         } else {
             rows as usize
         };

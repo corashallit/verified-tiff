@@ -761,7 +761,18 @@ uint64_t TIFFVTileSize64(TIFF *t, uint32_t n) { return size64(t, 3, n); }
 tmsize_t TIFFVTileSize(TIFF *t, uint32_t n) {
   return (tmsize_t)TIFFVTileSize64(t, n);
 }
-uint32_t TIFFNumberOfStrips(TIFF *t) { return (uint32_t)info(t, 7); }
+uint32_t TIFFNumberOfStrips(TIFF *t) {
+  if (!valid(t, __func__))
+    return 0;
+  if (!TIFFIsTiled(t) && info(t, 0))
+    return (uint32_t)info(t, 7);
+  /* Like libtiff, a tiled image, or a handle with no directory yet, has the
+     strips its RowsPerStrip implies. */
+  uint64_t rows = info(t, 10), h = info(t, 1);
+  uint64_t n = rows == 0 || rows >= h ? 1 : (h - 1) / rows + 1;
+  n = info(t, 11) == 2 ? n * info(t, 12) : n;
+  return n > UINT32_MAX ? 0 : (uint32_t)n;
+}
 uint32_t TIFFNumberOfTiles(TIFF *t) { return (uint32_t)info(t, 7); }
 static uint64_t strile(TIFF *t, uint32_t index, int counts, int *error) {
   if (error)

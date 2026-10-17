@@ -132,7 +132,7 @@ static void null_test(void){
  uint8_t b[64]={0};uint32_t rgba_buf[16]={0};char message[1024];uint64_t u;uint16_t v;
  assert(!TIFFGetField(NULL,256,&u));assert(!TIFFGetFieldDefaulted(NULL,256,&u));assert(!TIFFSetField(NULL,256,(uint32_t)1));
  assert(!TIFFIsBigEndian(NULL)&&!TIFFIsByteSwapped(NULL)&&!TIFFIsMSB2LSB(NULL)&&!TIFFIsUpSampled(NULL)&&!TIFFLastDirectory(NULL));
- assert(!TIFFNumberOfDirectories(NULL)&&!TIFFSetDirectory(NULL,0)&&!TIFFReadDirectory(NULL)&&!TIFFSetSubDirectory(NULL,0));
+ assert(!TIFFNumberOfDirectories(NULL)&&!TIFFNumberOfStrips(NULL)&&!TIFFSetDirectory(NULL,0)&&!TIFFReadDirectory(NULL)&&!TIFFSetSubDirectory(NULL,0));
  assert(!TIFFReadEXIFDirectory(NULL,0)&&!TIFFReadGPSDirectory(NULL,0));
  assert(!TIFFScanlineSize(NULL)&&!TIFFGetStrileOffset(NULL,0));assert(TIFFComputeTile(NULL,0,0,0,0)==UINT32_MAX&&TIFFComputeStrip(NULL,0,0)==UINT32_MAX);
  assert(TIFFReadScanline(NULL,b,0,0)==-1&&TIFFReadEncodedStrip(NULL,0,b,1)==-1&&TIFFReadEncodedTile(NULL,0,b,1)==-1&&TIFFReadRawStrip(NULL,0,b,1)==-1&&TIFFReadRawTile(NULL,0,b,1)==-1&&TIFFReadTile(NULL,b,0,0,0,0)==-1);
