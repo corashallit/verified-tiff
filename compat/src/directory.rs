@@ -41,8 +41,12 @@ pub fn page_offset(source:&mut Source,header:ct::Header,page:Option<u32>,l:&Limi
     while off!=0{
         if seen.contains(&off){if page.is_none(){break;}return Err((40,"cyclic directory chain"));}
         if seen.len()==l.max_directories{return Err((LIMIT,"directory traversal limit"));}
-        seen.push(off)?;if page==Some(seen.len() as u32-1){return Ok(seen);}
-        off=table(source,header,off,l)?.2;
+        if page==Some(seen.len() as u32){seen.push(off)?;return Ok(seen);}
+        // Like libtiff, the count ends before a directory whose link it cannot read.
+        let next=match table(source,header,off,l){
+            Ok(t)=>t.2,Err(e) if page.is_none()&&e.0==INVALID=>break,Err(e)=>return Err(e),
+        };
+        seen.push(off)?;off=next;
     }
     if page.is_some(){Err((INVALID,"directory not found"))}else{Ok(seen)}
 }

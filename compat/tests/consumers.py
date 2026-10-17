@@ -162,6 +162,14 @@ class Consumers(unittest.TestCase):
   # libtiff counts each distinct IFD once and stops a ReadDirectory loop there.
   for name,pages in [('test_ifd_loop_to_self.tif',1),('test_ifd_loop_to_first.tif',2),('test_ifd_loop_subifd.tif',5)]:
    self.call('pages',ROOT/'tests/upstream'/name,pages)
+ def test_unreadable_directory_ends_count(self):
+  # libtiff counts the directories before one whose link it cannot read.
+  for big in [False,True]:
+   tags=scene(big=big)[3];blob=bytearray(assemble([tags,tags],big,main_next=[1,None])[0])
+   cw,ew,slot=(8,20,8) if big else (2,12,4);link=(16 if big else 8)+2*(cw+ew*len(tags))+slot
+   struct.pack_into('<Q' if big else '<I',blob,link,len(blob)+64)
+   p=self.path/'tail.tif';p.write_bytes(blob)
+   with self.subTest(big=big):self.call('pages',p,2)
  def test_file_sized_input_limit(self):
   # Single-segment codecs decode a derived view that is larger than a tiny file.
   for name in ['fax-g3.tif','fax-g4-tile.tif','jpeg-gray.tif','jpeg-tile.tif','ojpeg-tables.tif','webp-tile.tif','logluv-strip.tif']:
