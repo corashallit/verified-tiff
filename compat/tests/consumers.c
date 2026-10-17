@@ -36,6 +36,14 @@ int main(int argc,char **argv){
   else assert(!t&&errno==EINVAL);
   return 0;
  }
+ if(!strcmp(mode,"exact-limit")){
+  FILE *f=fopen(argv[2],"rb");assert(f&&!fseek(f,0,SEEK_END));long n=ftell(f);assert(n>0);fclose(f);
+  TIFFOpenOptions *o=TIFFOpenOptionsAlloc();assert(o&&VTIFFOpenOptionsSetLimits(o,(uint64_t)n,1U<<20,100000000));
+  TIFF *t=TIFFOpenExt(argv[2],"rc",o);TIFFOpenOptionsFree(o);assert(t);static unsigned char out[1U<<20];
+  uint16_t photo=0;if(TIFFGetField(t,TIFFTAG_PHOTOMETRIC,&photo)&&photo==PHOTOMETRIC_YCBCR)assert(TIFFSetField(t,TIFFTAG_JPEGCOLORMODE,JPEGCOLORMODE_RGB));
+  assert((TIFFIsTiled(t)?TIFFReadEncodedTile(t,0,out,sizeof(out)):TIFFReadEncodedStrip(t,0,out,sizeof(out)))>0);
+  TIFFClose(t);return 0;
+ }
  if(!strcmp(mode,"environment")){
   assert(argc==4);int expect=atoi(argv[3]);TIFF *t=TIFFOpen(argv[2],"rc");
   if(expect==0){assert(!t&&(errno==EINVAL||errno==EFBIG));return 0;}assert(t);

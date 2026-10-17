@@ -132,6 +132,10 @@ class Consumers(unittest.TestCase):
   for bits,predict in [(8,2),(32,3),(64,3)]:
    for le,tiled in itertools.product([False,True],repeat=2):
     p=self.path/'codec.tif';p.write_bytes(scene(w=17,h=19,ch=3,bits=bits,fmt=3 if predict==3 else 1,codec=8,predict=predict,le=le,tiled=tiled)[0]);self.call('clone',p)
+ def test_file_sized_input_limit(self):
+  # Single-segment codecs decode a derived view that is larger than a tiny file.
+  for name in ['fax-g3.tif','fax-g4-tile.tif','jpeg-gray.tif','jpeg-tile.tif','ojpeg-tables.tif','webp-tile.tif','logluv-strip.tif']:
+   self.call('exact-limit',ROOT/'tests/fixtures'/name)
  def test_read_side_sample_format(self):
   for bits,le,big in itertools.product([32,64],[False,True],[False,True]):
    p=self.path/'float.tif';p.write_bytes(scene(bits=bits,fmt=3,le=le,big=big,codec=8)[0]);self.call('readset',p)
