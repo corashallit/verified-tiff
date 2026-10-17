@@ -67,8 +67,11 @@ pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer
             tags.push(Tag{key:e.tag,kind:e.kind,count:e.count as usize,at:0,remote:Some(e.offset)})?;continue;
         }
         let raw=source.read(e.offset,e.length as usize)?;
+        // Like libtiff, count the NUL added to an ASCII value that lacks one.
+        // InkNames keeps its exact payload.
+        let count=e.count as usize+usize::from(e.kind==2&&e.tag!=333&&raw.last().is_some_and(|v|*v!=0));
         data.extend(&raw)?;data.push(0)?; // ASCII getters are always terminated.
-        tags.push(Tag{key:e.tag,kind:e.kind,count:e.count as usize,at,remote:None})?;
+        tags.push(Tag{key:e.tag,kind:e.kind,count,at,remote:None})?;
     }
     Ok((data,tags,next))
 }

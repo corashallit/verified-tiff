@@ -174,6 +174,10 @@ class Consumers(unittest.TestCase):
   tags=[(256,4,[16]),(257,4,[0x80000008]),(258,3,[8,8]),(259,3,[1]),(262,3,[1]),(277,3,[2]),(278,4,[1]),(284,3,[2]),
    (322,4,[16]),(323,4,[0x7ffffff0]),(324,4,('SEG',[b'\0']*4)),(325,4,[1]*4)]
   self.assertEqual(self.dump(assemble([tags])[0],'sizes').split()[0],b'0')
+ def test_unknown_tag_counts(self):
+  # libtiff counts the NUL it adds to an unterminated ASCII value.
+  for kind,value in [(2,b'unterminated'),(2,b'a\0b'),(2,b'done\0')]:
+   with self.subTest(kind=kind,value=value):self.dump(scene(extra=[(65000,kind,value)])[0],'tag65000')
  def test_read_side_sample_format(self):
   for bits,le,big in itertools.product([32,64],[False,True],[False,True]):
    p=self.path/'float.tif';p.write_bytes(scene(bits=bits,fmt=3,le=le,big=big,codec=8)[0]);self.call('readset',p)

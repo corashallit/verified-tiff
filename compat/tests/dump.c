@@ -96,6 +96,16 @@ int main(int argc, char **argv) {
         assert(fwrite(p, 1, n, f) == n);
       }
     free(p);
+  } else if (!strcmp(argv[2], "tag65000")) {
+    /* An unknown tag reads back with a 32-bit count and a data pointer. */
+    uint32_t n = 0;
+    const uint8_t *d = NULL;
+    const TIFFField *field = TIFFFieldWithTag(t, 65000);
+    int ok = TIFFGetField(t, 65000, &n, &d);
+    fprintf(f, "%d %u %d", ok, n, d == NULL);
+    for (size_t i = 0; ok == 1 && i < (size_t)n * TIFFFieldSetGetSize(field); i++)
+      fprintf(f, " %02x", d[i]);
+    fputc('\n', f);
   } else if (!strcmp(argv[2], "sizes")) {
     /* Strip queries are defined for tiled images too. */
     fprintf(f, "%u %llu %llu %llu %u\n", TIFFNumberOfStrips(t),
