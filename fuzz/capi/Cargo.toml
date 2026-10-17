@@ -1,0 +1,40 @@
+[package]
+name = "verified-tiff-capi-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+verified-tiff-capi = { path = "../../compat" }
+
+[features]
+# Links a renamed copy of the pinned libtiff for the differential target.
+reference = []
+
+[[bin]]
+name = "capi"
+path = "capi.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "capi_diff"
+path = "capi_diff.rs"
+test = false
+doc = false
+bench = false
+required-features = ["reference"]
+
+[profile.release]
+debug = 1
+debug-assertions = true
+overflow-checks = true
+
+# Kept out of the main workspace and its lock file.
+[workspace]
