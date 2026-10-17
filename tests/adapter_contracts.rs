@@ -44,6 +44,18 @@ fn schemas_do_not_change_argument_shape_with_stored_count(){
     assert!(meta::payload(usize::MAX,0,usize::MAX,12).is_err());
 }
 #[test]
+fn channel_layouts_match_bit_depth_reference(){
+    for bits in 0..=17u16{for stored in [0usize,1,2,3,255,256,257,512,768,769,65536,196608]{for colormap in [false,true]{for (samples,extras) in [(1u16,0u16),(2,1),(3,0),(4,1),(1,2)]{
+        let each=1usize<<bits;let got=meta::channels(colormap,stored,bits,samples,extras);
+        let valid=bits<=16&&(stored==3*each||!colormap&&stored==each);
+        assert_eq!(got.is_ok(),valid,"{colormap} {stored} {bits}");
+        if let Ok(c)=got{
+            assert_eq!((c.parts,c.each,c.stride),(if colormap||samples>extras+1{3}else{1},each,if stored==3*each{each}else{0}));
+            assert!((c.parts-1)*c.stride+c.each<=stored);
+        }
+    }}}}
+}
+#[test]
 fn crops_match_coordinate_reference_and_do_not_touch_padding(){
     for w in 1..9 {for h in 1..9 {for vw in 1..=w {for vh in 1..=h {
         for fx in [false,true]{for fy in [false,true]{for y in 0..vh {for x in 0..vw {for n in 1..=vw-x {

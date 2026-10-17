@@ -98,6 +98,7 @@ Use libtiff's exact varargs output pointer types:
 | ExtraSamples | `uint16_t *count`, `uint16_t **values` |
 | SubIFD | `uint16_t *count`, `uint64_t **offsets` |
 | ColorMap | Three `uint16_t **` channel arrays of `1 << BitsPerSample` entries |
+| TransferFunction | Three `uint16_t **` curves of `1 << BitsPerSample` entries when there are several color samples, else one |
 | X/YResolution and X/YPosition | `float *` |
 | PageNumber, YCbCrSubsampling, HalftoneHints, DotRange | Two `uint16_t *` |
 | DocumentName, ImageDescription, Make, Model, PageName, Software, DateTime, Artist, HostComputer, Copyright, TargetPrinter | `char **` |

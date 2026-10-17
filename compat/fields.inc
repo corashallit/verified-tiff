@@ -106,31 +106,22 @@ uint32_t TIFFGetTagListEntry(TIFF *t,int index){
   size_t n=info(t,15);
   for(size_t i=0;i<n;i++){uint32_t tag=vt_tag(t->state,i);const TIFFField *f=resolve_field(t,tag);if(f&&f->custom&&index--==0)return tag;}return UINT32_MAX;
 }
-static int transfer_getfield(TIFF *t,va_list ap,int def){
-  uint16_t bits=1,ch=1,extras=0,*extra=NULL;
-  TIFFGetFieldDefaulted(t,TIFFTAG_BITSPERSAMPLE,&bits);TIFFGetFieldDefaulted(t,TIFFTAG_SAMPLESPERPIXEL,&ch);TIFFGetFieldDefaulted(t,TIFFTAG_EXTRASAMPLES,&extras,&extra);
-  if(bits==0||bits>16||extras>ch){fail(t,EINVAL,"TIFFGetField","transfer function geometry");return 0;}
-  const uint8_t *data=NULL;size_t n=0,curve=(size_t)1<<bits;int many=ch-extras>1;
-  int r=vt_typed(t->state,TIFFTAG_TRANSFERFUNCTION,TIFF_SHORT,&data,&n);
+/* One pointer per ColorMap or TransferFunction channel; Rust checks each
+   channel's 1 << BitsPerSample entries against the stored length. */
+static int channels_getfield(TIFF *t,uint32_t tag,va_list ap,int def){
+  uint16_t bits=1,samples=1,extras=0,*extra=NULL;
+  TIFFGetFieldDefaulted(t,TIFFTAG_BITSPERSAMPLE,&bits);TIFFGetFieldDefaulted(t,TIFFTAG_SAMPLESPERPIXEL,&samples);TIFFGetFieldDefaulted(t,TIFFTAG_EXTRASAMPLES,&extras,&extra);
+  const uint16_t *p[3];size_t n=0;
+  int r=vt_channels(t->state,tag,def,bits,samples,extras,p,&n);
   if(r<0){bridge_fail(t,"TIFFGetField");return 0;}
-  if(!r){
-    if(!def)return 0;
-    if(t->transfer_count!=curve){
-      size_t bytes=curve*sizeof(uint16_t);if(!vt_mem_claim(t->state,bytes)){bridge_fail(t,"TIFFGetFieldDefaulted");return 0;}
-      uint16_t *p=malloc(bytes);if(!p){vt_mem_release(t->state,bytes);fail(t,ENOMEM,"TIFFGetFieldDefaulted","transfer table allocation");return 0;}
-      for(size_t i=0;i<curve;i++)p[i]=(uint16_t)floor(65535.*pow((double)i/(double)(curve-1),2.2)+0.5);
-      if(t->default_transfer){vt_mem_release(t->state,t->transfer_count*sizeof(uint16_t));free(t->default_transfer);}
-      t->default_transfer=p;t->transfer_count=curve;
-    }
-    data=(const uint8_t*)t->default_transfer;n=curve;
-  }
-  if(n!=curve&&!(many&&n==3*curve)){fail(t,EINVAL,"TIFFGetField","transfer table length");return 0;}
-  uint16_t **a=va_arg(ap,uint16_t**),**b=NULL,**c=NULL;if(many){b=va_arg(ap,uint16_t**);c=va_arg(ap,uint16_t**);}
-  if(!a||(many&&(!b||!c)))return 0;
-  *a=(uint16_t*)data;if(many){*b=(uint16_t*)data+(n==curve?0:curve);*c=(uint16_t*)data+(n==curve?0:2*curve);}return 1;
+  if(!r)return 0;
+  uint16_t **out[3];
+  for(size_t i=0;i<n;i++)out[i]=va_arg(ap,uint16_t **);
+  for(size_t i=0;i<n;i++)if(!out[i]){fail(t,EINVAL,"TIFFGetField","null output");return 0;}
+  for(size_t i=0;i<n;i++)*out[i]=(uint16_t *)p[i];
+  return 1;
 }
 static int generic_getfield(TIFF *t,uint32_t tag,va_list ap,int def){
-  if(!t->directory_kind&&tag==TIFFTAG_TRANSFERFUNCTION)return transfer_getfield(t,ap,def);
   const TIFFField *f=resolve_field(t,tag);
   if(!f)return 0; /* Optional absent tags do not raise a decode error. */
   const uint8_t *data=NULL;size_t n=0;

@@ -32,7 +32,6 @@ int TIFFUnsetField(TIFF *t,uint32_t tag){
 void TIFFFreeDirectory(TIFF *t){
   if(!valid(t,__func__))return;
   if(!vt_free_directory(t->state)){bridge_fail(t,__func__);return;}
-  if(t->default_transfer){vt_mem_release(t->state,t->transfer_count*sizeof(uint16_t));free(t->default_transfer);t->default_transfer=NULL;t->transfer_count=0;}
   t->row=t->strip=t->tile=UINT32_MAX;
 }
 static int reader_codec_init(TIFF *t,int scheme){

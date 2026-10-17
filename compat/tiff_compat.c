@@ -38,7 +38,7 @@ struct tiff {
   TIFFTagMethods methods;
   size_t field_count;
   int field_error, directory_written;
-  uint16_t *default_transfer;size_t transfer_count;float default_reference[6];
+  float default_reference[6];
 };
 static _Thread_local int last_code;
 static _Thread_local char last_message[512];
@@ -274,6 +274,7 @@ static int default_getfield(TIFF *,uint32_t,va_list);
 static int default_setfield(TIFF *,uint32_t,va_list);
 static int initialise_fields(TIFF *t, unsigned kind);
 static int generic_getfield(TIFF *t, uint32_t tag, va_list ap, int def);
+static int channels_getfield(TIFF *t, uint32_t tag, va_list ap, int def);
 static int generic_setfield(TIFF *t,uint32_t tag,va_list ap);
 static TIFF *new_handle(const char *name, const char *mode,
                         TIFFOpenOptions *options) {
@@ -317,7 +318,6 @@ static TIFF *new_handle(const char *name, const char *mode,
 static void destroy(TIFF *t) {
   if (!t)
     return;
-  if(t->default_transfer){vt_mem_release(t->state,t->transfer_count*sizeof(uint16_t));free(t->default_transfer);}
   free_client_info(t);
   free_fields(t);
   vt_close(t->state);
@@ -587,24 +587,9 @@ static int getfield(TIFF *t, uint32_t tag, va_list ap, int def) {
     *out = (uint16_t *)p;
     return 1;
   }
-  case TIFFTAG_COLORMAP: {
-    size_t n = 0;
-    uint16_t bits = 1;
-    const uint16_t *p = vt_array(t->state, tag, &n);
-    TIFFGetFieldDefaulted(t, TIFFTAG_BITSPERSAMPLE, &bits);
-    /* Callers index each channel by sample value, so like libtiff expose
-       only a map with exactly 1 << BitsPerSample entries per channel. */
-    if (!p || bits > 16 || n != (size_t)3 << bits)
-      return 0;
-    uint16_t **r = va_arg(ap, uint16_t **), **g = va_arg(ap, uint16_t **),
-             **b = va_arg(ap, uint16_t **);
-    if (!r || !g || !b)
-      goto bad;
-    *r = (uint16_t *)p;
-    *g = (uint16_t *)p + n / 3;
-    *b = (uint16_t *)p + 2 * n / 3;
-    return 1;
-  }
+  case TIFFTAG_COLORMAP:
+  case TIFFTAG_TRANSFERFUNCTION:
+    return channels_getfield(t, tag, ap, def);
   case TIFFTAG_SUBIFD: {
     size_t n=0; const void *p=vt_array(t->state,tag,&n);
     if (!n) return 0;

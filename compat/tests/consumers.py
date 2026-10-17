@@ -155,6 +155,17 @@ class Consumers(unittest.TestCase):
    for orientation in [1,4,6]:
     p=self.path/'oriented.tif';p.write_bytes(scene(w=17,h=19,ch=ch,photo=photo,orientation=orientation)[0]);out.append(self.call('rgba-as-stored',p))
    with self.subTest(ch=ch):self.assertEqual(out[0],out[1]);self.assertEqual(out[0],out[2])
+ def test_channel_arrays(self):
+  # Each ColorMap channel and TransferFunction curve has 1 << BitsPerSample
+  # entries: a ColorMap stores three channels and a TransferFunction one curve
+  # or three. libtiff ignores other lengths, and a defaulted TransferFunction
+  # is then its default curve.
+  for bits,ch,alpha in [(4,1,0),(8,1,0),(8,3,0),(8,4,2),(8,2,2),(16,1,0),(16,3,0)]:
+   n=1<<bits
+   for key,count in itertools.product([320,301],[None,n,3*n,n+1,2*n]):
+    extra=[] if count is None else [(key,3,[(i*40503)&0xffff for i in range(count)])]
+    with self.subTest(bits=bits,ch=ch,key=key,count=count):
+     self.dump(scene(w=5,h=3,ch=ch,bits=bits,alpha=alpha,extra=extra)[0],'channels')
  def test_eight_bit_colormaps(self):
   # libtiff treats a map with no entry above 255 as 8-bit and others as 16-bit.
   for bits,scale in itertools.product([2,8],[1,257]):

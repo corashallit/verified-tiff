@@ -15,6 +15,7 @@ int vt_strile(void *,uint32_t,int,uint64_t *);
 const uint8_t *vt_field(void *, uint32_t, uint16_t *, size_t *);
 int vt_real(void *, uint32_t, float *);
 int vt_pair(void *, uint32_t, int, uint16_t *);
+int vt_channels(void *, uint32_t, int, uint16_t, uint16_t, uint16_t, const uint16_t **, size_t *);
 uint32_t vt_tag(void *, size_t);
 const uint8_t *vt_region(void *,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,size_t *);
 void vt_close(void *);

@@ -83,6 +83,43 @@ pub fn convert_integer(v:u64,source:u16,target:u16)->(r:Result<u64,Error>)
     }
     Ok(n as u64)
 }
+/// libtiff implies 2^BitsPerSample entries for each channel of a ColorMap,
+/// which stores three, and of a TransferFunction, which stores one curve or
+/// three. Callers index each channel by sample value.
+pub open spec fn entries(bits:nat)->nat decreases bits {if bits==0 {1} else {2*entries((bits-1) as nat)}}
+pub open spec fn channels_valid(colormap:bool,stored:int,bits:nat)->bool {
+    bits<=16 && (stored==3*entries(bits) || !colormap && stored==entries(bits))
+}
+proof fn entries_pow(bits:nat)
+    requires bits<=16,
+    ensures entries(bits)==crate::deflate_bits::pow(bits as int),
+    decreases bits,
+{
+    crate::deflate_bits::pow_bound(bits as int);
+    if bits>0 {entries_pow((bits-1) as nat);}
+}
+/// A ColorMap has three channel pointers. A TransferFunction has three when
+/// there are several color samples, which share a single stored curve.
+pub open spec fn channel_parts(colormap:bool,samples:int,extras:int)->int {
+    if colormap || samples>extras+1 {3} else {1}
+}
+/// Channel `i` of `parts` starts at entry `i*stride` and has `each` entries.
+pub struct Channels{pub parts:usize,pub each:usize,pub stride:usize}
+pub fn channels(colormap:bool,stored:usize,bits:u16,samples:u16,extras:u16)->(r:Result<Channels,Error>)
+    ensures r.is_ok()==channels_valid(colormap,stored as int,bits as nat),
+        r.is_ok() ==> r.unwrap().each==entries(bits as nat)
+            && r.unwrap().parts==channel_parts(colormap,samples as int,extras as int)
+            && r.unwrap().stride==(if stored==3*r.unwrap().each {r.unwrap().each} else {0})
+            && (r.unwrap().parts-1)*r.unwrap().stride+r.unwrap().each<=stored,
+{
+    if bits>16{return Err(Error::Invalid);}
+    proof{crate::bit_window::powers(bits as u32);crate::deflate_bits::pow_bound(bits as int);entries_pow(bits as nat);}
+    let each=(1u32<<bits) as usize;
+    let stride=if stored==3*each{each}else if !colormap&&stored==each{0}else{return Err(Error::Invalid);};
+    let parts:usize=if colormap||samples as u32>extras as u32+1{3}else{1};
+    assert((parts-1)*stride==if parts==3 {2*stride} else {0}) by(nonlinear_arith) requires parts==1||parts==3;
+    Ok(Channels{parts,each,stride})
+}
 /// Validate every source element before the adapter forms a slice. Exact count
 /// acceptance excludes both short metadata and spurious always-error code.
 pub fn payload(len:usize,at:usize,count:usize,kind:u16)->(r:Result<usize,Error>)

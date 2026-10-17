@@ -10,7 +10,7 @@ The existing C ABI is retained.
 
 | Module | Checked contract | Production call sites |
 | --- | --- | --- |
-| `adapter_meta` | Exact accepted getter shapes from a registered schema; count-width limits; registration count-convention consistency; exact integer conversion or rejection; source metadata payload bounds | `compat/fields.inc` through stateless bridges; `compat/src/metadata.rs` and `directory.rs` |
+| `adapter_meta` | Exact accepted getter shapes from a registered schema; count-width limits; registration count-convention consistency; exact integer conversion or rejection; source metadata payload bounds; exact ColorMap/TransferFunction lengths for their bit depth, with every channel pointer inside the stored array | `compat/fields.inc` through stateless bridges; `compat/src/metadata.rs` and `directory.rs` |
 | `adapter_geometry` | Positive strip/tile grids, exact plane/segment indexes and sufficient-input acceptance; orientation aliases; exact mirrored crop spans contained in the destination raster | Directory geometry assembly; native and CMYK/Lab/YCbCr RGBA placement |
 | `adapter_window` | Exact unread-suffix preservation and unchanged suffix frame; refill source-position conservation; available-bit arithmetic | The production PackBits/LZW/Deflate input-window refill and LZW end checks |
 | `adapter_bounds` | Exact allocation admission and release transitions, signed-addressable allocation sizes, source offsets, predictor-row rounding, bounded directory steps; failure-atomic initialized copies and initialization of C output buffers | Adapter buffer allocation/accounting, source I/O, streamed range reads, directory advancement, and final native/RGBA/user-buffer commits |
@@ -33,6 +33,11 @@ against real-number colorimetry.
 * A custom definition whose getter and setter disagree about the width of a
   passed count is rejected at registration. The standard TIFF/EXIF/GPS schema
   and anonymous-tag pointer/count convention remain available.
+* ColorMap and TransferFunction getters hand out one pointer per channel, each
+  with the 2^BitsPerSample entries callers index by sample value. The checked
+  layout accepts exactly the lengths libtiff reads and places every channel
+  inside the stored array; a defaulted TransferFunction is libtiff's default
+  curve, kept like a stored value.
 * All signed and unsigned integer metadata narrowing runs through the checked
   value-preservation function. Metadata payloads are bounded before iteration.
 * Allocation claims and releases use checked transitions inside atomic update

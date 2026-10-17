@@ -162,6 +162,27 @@ int main(int argc, char **argv) {
     for (uint32_t i = 0; profile && i < size; i++)
       fprintf(f, " %02x", icc[i]);
     fprintf(f, " %s\n", described ? text : "-");
+  } else if (!strcmp(argv[2], "channels")) {
+    /* ColorMap, TransferFunction and defaulted TransferFunction channels of
+     * the 1 << BitsPerSample entries callers index by sample value. */
+    uint16_t bits = 1, spp = 1, extras = 0, *extra = NULL;
+    TIFFGetFieldDefaulted(t, TIFFTAG_BITSPERSAMPLE, &bits);
+    TIFFGetFieldDefaulted(t, TIFFTAG_SAMPLESPERPIXEL, &spp);
+    TIFFGetFieldDefaulted(t, TIFFTAG_EXTRASAMPLES, &extras, &extra);
+    for (int i = 0; i < 3; i++) {
+      uint32_t tag = i ? TIFFTAG_TRANSFERFUNCTION : TIFFTAG_COLORMAP;
+      uint16_t *c[3] = {NULL, NULL, NULL};
+      int ok = i == 2 ? TIFFGetFieldDefaulted(t, tag, &c[0], &c[1], &c[2])
+                      : TIFFGetField(t, tag, &c[0], &c[1], &c[2]);
+      fprintf(f, "%d", ok);
+      for (int k = 0; ok && k < (i == 0 || spp - extras > 1 ? 3 : 1); k++) {
+        uint64_t sum = 0;
+        for (size_t j = 0; j < (size_t)1 << bits; j++)
+          sum = sum * 31 + c[k][j];
+        fprintf(f, " %llx", (unsigned long long)sum);
+      }
+      fputc('\n', f);
+    }
   } else if (!strcmp(argv[2], "reals")) {
     /* Float array fields, exactly. */
     static const struct { uint32_t tag; int n; } arrays[] = {

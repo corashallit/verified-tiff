@@ -53,7 +53,7 @@ impl Handle{
         self.data.rebase(arena,&mut meta.tags,&self.meta.tags,&self.source.mem)?;
         let place=|tags:&[Tag],key:u32|find(tags,key as u16).map(|t|(t.kind,t.count,t.at,t.slot,t.remote));
         let (old,new)=(&self.meta.tags,&meta.tags);
-        self.converted.retain(|c|place(new,c.key).is_some()&&place(new,c.key)==place(old,c.key));
+        self.converted.retain(|c|place(new,c.key)==place(old,c.key));
         meta.keep_arrays(&mut self.meta);
         self.meta=meta;self.stream=None;self.cache=None;self.rendered=None;Ok(())
     }
@@ -64,9 +64,7 @@ impl Handle{
         let s=self.data.bytes(&t);checked::payload(s.len(),t.at,t.count,t.kind).map_err(err)?;
         let w=container::field_size(kind);let sw=container::field_size(t.kind);
         if w==0||matches!(kind,5|10){return Err((INVALID,"invalid requested metadata type"));}
-        let bytes=product(t.count,w)?.checked_add(if kind==2{1}else{0}).ok_or((LIMIT,"metadata size overflow"))?;
-        let words=bytes.checked_add(7).ok_or((LIMIT,"metadata size overflow"))?/8;
-        let mut data=Buf::new(words,&self.source.mem)?;for _ in 0..words{data.push(0u64)?;}
+        let mut data=native(t.count,w,usize::from(kind==2),&self.source.mem)?;
         for i in 0..t.count{
             let at=t.at+product(i,sw)?;
             let value=if matches!(kind,11|12){let v=real(s,at,t.kind,self.meta.le,kind==11)?;if kind==11{(v as f32).to_bits() as u64}else{v.to_bits()}}
@@ -74,14 +72,53 @@ impl Handle{
                 let v=read_word(s,at,sw,self.meta.le).map_err(err)?;
                 checked::convert_integer(v,t.kind,kind).map_err(err)?
             };
-            // Native representation in a u64-aligned allocation; write bytes
-            // without aliasing typed foreign pointers.
-            let b=value.to_ne_bytes();let from=if cfg!(target_endian="big"){8-w}else{0};
-            for j in 0..w{let p=i*w+j;let mut a=data[p/8].to_ne_bytes();a[p%8]=b[from+j];data[p/8]=u64::from_ne_bytes(a);}
+            set_native(&mut data,i,w,value);
         }
         let ptr=data.as_ptr().cast();self.converted.reserve(self.converted.len()+1)?;
         self.converted.push(Converted{key,kind,n:t.count,data})?;Ok(Some((ptr,t.count)))
     }
+    /// libtiff's default TransferFunction curve of `n` entries. Like a stored
+    /// value, it stays until the directory changes or the field is set.
+    fn default_transfer(&mut self,n:usize)->R<(*const u8,usize)>{
+        if let Some(v)=self.converted.iter().find(|v|v.key==301&&v.kind==0&&v.n==n){return Ok((v.data.as_ptr().cast(),n));}
+        let mut data=native(n,2,0,&self.source.mem)?;
+        for i in 1..n{set_native(&mut data,i,2,(65535.*(i as f64/(n as f64-1.)).powf(2.2)+0.5).floor() as u64);}
+        let ptr=data.as_ptr().cast();self.converted.reserve(self.converted.len()+1)?;
+        self.converted.push(Converted{key:301,kind:0,n,data})?;Ok((ptr,n))
+    }
+}
+/// Zeroed u64-aligned storage for `n` native values of `w` bytes and `extra`
+/// more bytes.
+fn native(n:usize,w:usize,extra:usize,mem:&Mem)->R<Buf<u64>>{
+    let words=product(n,w)?.checked_add(extra).and_then(|v|v.checked_add(7)).ok_or((LIMIT,"metadata size overflow"))?/8;
+    let mut data=Buf::new(words,mem)?;for _ in 0..words{data.push(0u64)?;}Ok(data)
+}
+/// Write value `i` in native representation without aliasing typed foreign
+/// pointers.
+fn set_native(data:&mut [u64],i:usize,w:usize,value:u64){
+    let b=value.to_ne_bytes();let from=if cfg!(target_endian="big"){8-w}else{0};
+    for j in 0..w{let p=i*w+j;let mut a=data[p/8].to_ne_bytes();a[p%8]=b[from+j];data[p/8]=u64::from_ne_bytes(a);}
+}
+/// A ColorMap's or TransferFunction's channel pointers: 1 when present, 0
+/// when absent or not of a length the bit depth implies. Like libtiff, a
+/// defaulted TransferFunction that is absent or of such a length is its
+/// default curve.
+#[no_mangle]
+pub unsafe extern "C" fn vt_channels(p:*mut c_void,key:u32,defaulted:i32,bits:u16,samples:u16,extras:u16,out:*mut *const u16,parts:*mut usize)->i32{
+    guard(-1,||{
+        let h=handle(p)?;if out.is_null()||parts.is_null(){return Err((INVALID,"null channel output"));}
+        let colormap=match key{320=>true,301=>false,_=>return Err((INVALID,"not a channel array"))};
+        let layout=|n:usize|checked::channels(colormap,n,bits,samples,extras).ok();
+        let (base,n)=match h.typed(key,3)?{
+            Some((base,n)) if layout(n).is_some()=>(base,n),
+            _ if !colormap&&defaulted!=0&&bits<=16=>h.default_transfer(1usize<<bits)?,
+            _=>return Ok(0),
+        };
+        let Some(c)=layout(n) else{return Ok(0);};
+        // Each channel lies within the n entries, as the layout proves.
+        for i in 0..c.parts{*out.add(i)=base.cast::<u16>().add(i*c.stride);}
+        *parts=c.parts;Ok(1)
+    })
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_put(p:*mut c_void,key:u32,kind:u16,count:usize,input:*const u8)->i32{

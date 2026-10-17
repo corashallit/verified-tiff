@@ -278,8 +278,8 @@ all five adapter_* modules and their live production call sites. Keep exact
 schema/count acceptance, integer value preservation, crop placement, window
 source-position conservation, bounded accounting and MaybeUninit output
 initialization. Do not reintroduce C float-to-index casts or a plain byte slice
-of uninitialized caller output. Retain all ten adapter negative gates and the
-Rust/C boundary tests. No end-to-end C proof or ownership/event completeness
+of uninitialized caller output. Retain all ten adapter negative gates, the two
+channel-layout gates and the Rust/C boundary tests. No end-to-end C proof or ownership/event completeness
 is claimed; keep the residual boundary explicit in evidence and release notes.
 
 The C shim hardening is documented in docs/c-shim-hardening.md. Preserve the

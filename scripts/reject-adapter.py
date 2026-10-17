@@ -8,6 +8,8 @@ changes={
  'ink-length':('adapter_meta','ink_names','s.len()>65535','s.len()>=65535'),
  'schema':('adapter_meta','get_plan','if count_width==2&&n<=65535 {3}','if count_width==2&&n<=65535 {4}'),
  'narrowing':('adapter_meta','convert_integer','    Ok(n as u64)','    Ok(0u64)'),
+ 'channels':('adapter_meta','channels','!colormap&&stored==each{0}','stored>=each{0}'),
+ 'channel-parts':('adapter_meta','channels','extras as u32+1{3}','extras as u32{3}'),
  'allocation':('adapter_bounds','claim','if total!=0&&next>total','if false'),
  'release':('adapter_bounds','release','else{Ok(used-n)}','else{Ok(used)}'),
  'crop':('adapter_geometry','crop_span','let tx=if fx{vw-x-n}else{x};','let tx=x;'),
