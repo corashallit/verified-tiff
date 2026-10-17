@@ -22,7 +22,7 @@ binary="$TIFF_ROOT/fuzz/capi/target/$target/release/$bin"
 [ "${VTIFF_FUZZ_BUILD_ONLY:-0}" = 1 ] && exit 0
 work="$TIFF_ROOT/target/fuzz-$bin"; mkdir -p "$work/corpus" "$work/artifacts"
 # Seed from every checked-in fixture; libFuzzer merges them into its corpus.
-seeds=("$TIFF_ROOT"/tests/fixtures "$TIFF_ROOT"/tests/upstream)
+seeds=("$TIFF_ROOT"/tests/fixtures "$TIFF_ROOT"/tests/upstream "$TIFF_ROOT"/fuzz/capi/regressions)
 # libFuzzer writes per-job logs into the working directory.
 cd "$work"
 ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:abort_on_error=1:allocator_may_return_null=1}" \

@@ -308,6 +308,11 @@ static void reader_misc_test(void){
  inject("vt_scalar",-1);assert(!TIFFFindCODEC(1)->init(t,1)&&!TIFFIsUpSampled(t));clear_fault();
  assert(!TIFFGetField(t,TIFFTAG_SUBIFD,&off,&off));inject("vt_real",0);assert(!TIFFGetField(t,TIFFTAG_XRESOLUTION,&off));clear_fault();
  inject("vt_array",0);assert(!TIFFGetField(t,TIFFTAG_COLORMAP,&off,&off,&off));fault_rc=1;fault_len=0;assert(!TIFFGetField(t,TIFFTAG_COLORMAP,&off,&off,&off));clear_fault();
+ /* Like libtiff, a ColorMap needs exactly 1 << BitsPerSample entries per channel. */
+ uint16_t *red=NULL,*green=NULL,*blue=NULL;inject("vt_array",1);fault_len=6;assert(!TIFFGetField(t,TIFFTAG_COLORMAP,&red,&green,&blue)&&!red);
+ fault_len=768;assert(TIFFGetField(t,TIFFTAG_COLORMAP,&red,&green,&blue)&&green==red+256&&blue==red+512);clear_fault();
+ TIFF*wide=TIFFOpen("tests/fixtures/float64-gray-be.tif","r");assert(wide);inject("vt_array",1);fault_len=6;assert(!TIFFGetField(wide,TIFFTAG_COLORMAP,&off,&off,&off));clear_fault();TIFFClose(wide);
+ TIFF*short_map=TIFFOpen("tests/fixtures/acceptance-deflate.tif","r");assert(short_map);assert(!TIFFGetField(short_map,TIFFTAG_COLORMAP,&red,&green,&blue));TIFFClose(short_map);
  assert(TIFFReadEncodedTile(t,0,bytes,0)==-1);assert(TIFFReadEncodedStrip(t,UINT32_MAX,bytes,0)==-1);inject("vt_read_size",1);fault_len=0;assert(TIFFReadEncodedStrip(t,0,bytes,1)==0);clear_fault();
  inject("vt_read",1);assert(!TIFFReadRGBAImage(t,UINT32_MAX,UINT32_MAX,pixels,0));fault_len=SIZE_MAX;assert(!TIFFReadRGBAImage(t,1,100,pixels,0));clear_fault();
  TIFFRGBAImage img;assert(TIFFRGBAImageOK(t,NULL)&&TIFFRGBAImageBegin(&img,t,0,NULL));TIFF *save=img.tif;img.tif=NULL;assert(!TIFFRGBAImageGet(&img,pixels,1,1));img.tif=save;assert(!TIFFRGBAImageGet(&img,pixels,UINT32_MAX,UINT32_MAX));inject("vt_region",1);fault_len=SIZE_MAX;assert(!TIFFRGBAImageGet(&img,pixels,1,100));clear_fault();

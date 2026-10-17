@@ -585,8 +585,12 @@ static int getfield(TIFF *t, uint32_t tag, va_list ap, int def) {
   }
   case TIFFTAG_COLORMAP: {
     size_t n = 0;
+    uint16_t bits = 1;
     const uint16_t *p = vt_array(t->state, tag, &n);
-    if (!p || !n)
+    TIFFGetFieldDefaulted(t, TIFFTAG_BITSPERSAMPLE, &bits);
+    /* Callers index each channel by sample value, so like libtiff expose
+       only a map with exactly 1 << BitsPerSample entries per channel. */
+    if (!p || bits > 16 || n != (size_t)3 << bits)
       return 0;
     uint16_t **r = va_arg(ap, uint16_t **), **g = va_arg(ap, uint16_t **),
              **b = va_arg(ap, uint16_t **);
