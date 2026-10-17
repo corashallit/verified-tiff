@@ -18,7 +18,7 @@ impl Handle {
     }
     fn reals<const N:usize>(&self,key:u16,defaults:[f32;N])->R<[f32;N]>{
         let Some(t)=find(&self.meta.tags,key)else{return Ok(defaults);};if t.count!=N{return Err((INVALID,"color metadata count"));}
-        let mut a=defaults;for (i,v) in a.iter_mut().enumerate(){*v=metadata::real(&self.data,t.at+i*container::field_size(t.kind),t.kind,self.meta.le)? as f32;if !v.is_finite(){return Err((INVALID,"nonfinite color metadata"));}}Ok(a)
+        let mut a=defaults;for (i,v) in a.iter_mut().enumerate(){*v=metadata::real(&self.data,t.at+i*container::field_size(t.kind),t.kind,self.meta.le,true)? as f32;if !v.is_finite(){return Err((INVALID,"nonfinite color metadata"));}}Ok(a)
     }
     pub fn rgba_color(&mut self,x:usize,y:usize,w:usize,h:usize,source:usize,orientation:usize)->R<()>{
         if !(1..=8).contains(&orientation)||w==0||h==0{return Err((INVALID,"RGBA dimensions/orientation"));}

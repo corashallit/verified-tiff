@@ -283,6 +283,21 @@ class Consumers(unittest.TestCase):
    tags=[(256,4,[1]),(257,4,[h]),(258,3,[8]),(259,3,[1]),(262,3,[1]),(273,4,('SEG',[bytes(h)])),(279,4,[count])]
    with self.subTest(count=count,h=h):
     for mode in ['layout','sizes','counts']:self.dump(assemble([tags])[0],mode)
+ def test_real_arrays(self):
+  # libtiff divides float array rationals in single precision, with an
+  # unsigned denominator, reads a zero denominator as 0 and clamps doubles.
+  import struct
+  rational=lambda *p:b''.join(struct.pack('<II',n&0xffffffff,d) for n,d in p)
+  cases=[(5,rational((1,3),(2,3))),(5,rational((299,1000),(587,1000),(114,1000))),(5,rational((577090038,2444712011),(1930549412,2028277858),(1,0),(16777217,1),(3,16777219),(9,0xffffffff))),
+   (10,rational((-1,3),(-7,0),(5,0xffffffff))),(12,struct.pack('<3d',1e300,-1e300,0.1)),(11,struct.pack('<2f',0.3127,0.329)),(4,struct.pack('<6I',1,2,3,16777217,5,6))]
+  for kind,raw in cases:
+   n=len(raw)//WIDTHS[kind]
+   for key in [318,319,529,532]:
+    want={318:2,319:6,529:3,532:6}[key]
+    if n<want:continue
+    raw_n=raw[:want*WIDTHS[kind]]
+    tags=scene(w=4,h=3,ch=3,photo=6 if key==529 else 2)[3]+[(key,kind,raw_n)]
+    with self.subTest(kind=kind,key=key,raw=raw_n.hex()):self.dump(assemble([tags])[0],'reals')
  def test_unknown_tag_counts(self):
   # libtiff counts the NUL it adds to an unterminated ASCII value, and an
   # empty value has no data pointer.

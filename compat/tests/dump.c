@@ -133,6 +133,19 @@ int main(int argc, char **argv) {
       if (pass)
         TIFFClose(d);
     }
+  } else if (!strcmp(argv[2], "reals")) {
+    /* Float array fields, exactly. */
+    static const struct { uint32_t tag; int n; } arrays[] = {
+        {TIFFTAG_WHITEPOINT, 2}, {TIFFTAG_PRIMARYCHROMATICITIES, 6},
+        {TIFFTAG_YCBCRCOEFFICIENTS, 3}, {TIFFTAG_REFERENCEBLACKWHITE, 6}};
+    for (size_t i = 0; i < sizeof arrays / sizeof arrays[0]; i++) {
+      float *v = NULL;
+      int ok = TIFFGetField(t, arrays[i].tag, &v);
+      fprintf(f, "%u %d:", arrays[i].tag, ok);
+      for (int k = 0; ok && k < arrays[i].n; k++)
+        fprintf(f, " %a", v[k]);
+      fputc('\n', f);
+    }
   } else if (!strcmp(argv[2], "layout")) {
     /* RowsPerStrip as set and defaulted, then strip and tile indexes. */
     uint32_t rows = 0, fallback = 0;
