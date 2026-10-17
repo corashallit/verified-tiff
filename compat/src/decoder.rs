@@ -138,6 +138,8 @@ impl Handle{
         let right=x.checked_add(w).ok_or((LIMIT,"RGBA extent overflow"))?.min(width);
         let bottom=y.checked_add(h).ok_or((LIMIT,"RGBA extent overflow"))?.min(height);
         let (fx,fy)=geometry::orientation(source_orientation,orientation).map_err(err)?;
+        // Like libtiff, a map with no entry above 255 already holds 8-bit values.
+        let shift=if self.meta.map.iter().all(|v|*v<256){0}else{8};
         let fast=planar==1&&matches!(bits,8|16)&&photo!=3;
         let packed=channels==1&&matches!(photo,0|1|3)&&(matches!(bits,1|2|4)||(photo==3&&bits==8));
         let mut expansion=[[0u8;32];256];
@@ -145,7 +147,7 @@ impl Handle{
             let mask=(1usize<<bits)-1;
             for byte in 0..256{for j in 0..8/bits{
                 let v=(byte>>(8-bits-j*bits))&mask;
-                let q=if photo==3{let n=1usize<<bits;[(self.meta.map[v]>>8) as u8,(self.meta.map[n+v]>>8) as u8,(self.meta.map[2*n+v]>>8) as u8,255]}
+                let q=if photo==3{let n=1usize<<bits;[(self.meta.map[v]>>shift) as u8,(self.meta.map[n+v]>>shift) as u8,(self.meta.map[2*n+v]>>shift) as u8,255]}
                     else{let v=if photo==0{mask-v}else{v};let b=((v*255+mask/2)/mask) as u8;[b,b,b,255]};
                 pack(&mut expansion[byte][j*4..j*4+4],q);
             }}
@@ -182,7 +184,7 @@ impl Handle{
                         let index=(xx-bx*bw)*if planar==2{1}else{channels}+c;
                         let v=sample(&data,0,index,bits)?;
                         if photo==3{
-                            let n=1usize<<bits;for c in 0..3{rgba[c]=(self.meta.map[c*n+v as usize]>>8) as u8;}
+                            let n=1usize<<bits;for c in 0..3{rgba[c]=(self.meta.map[c*n+v as usize]>>shift) as u8;}
                         }else if ci<base{
                             let max=(1u32<<bits)-1;let v=if photo==0{max-v}else{v};
                             let b=if bits==16 && base==1{(v>>8) as u8}else{((v*255+max/2)/max) as u8};

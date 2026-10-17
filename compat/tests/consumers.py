@@ -132,6 +132,12 @@ class Consumers(unittest.TestCase):
   for bits,predict in [(8,2),(32,3),(64,3)]:
    for le,tiled in itertools.product([False,True],repeat=2):
     p=self.path/'codec.tif';p.write_bytes(scene(w=17,h=19,ch=3,bits=bits,fmt=3 if predict==3 else 1,codec=8,predict=predict,le=le,tiled=tiled)[0]);self.call('clone',p)
+ def test_eight_bit_colormaps(self):
+  # libtiff treats a map with no entry above 255 as 8-bit and others as 16-bit.
+  for bits,scale in itertools.product([2,8],[1,257]):
+   n=1<<bits;cmap=[(i*37+c*101)%256*scale for c in range(3) for i in range(n)]
+   blob=scene(w=17,h=19,ch=1,bits=bits,photo=3,extra=[(320,3,cmap)])[0]
+   with self.subTest(bits=bits,scale=scale):self.dump(blob,'rgba')
  def test_directory_reader_implied_fields(self):
   # Like libtiff, Compression and PlanarConfig read back even when absent.
   self.call('implied',ROOT/'tests/fixtures/profile-witness.tif')
