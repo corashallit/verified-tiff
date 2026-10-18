@@ -15,9 +15,9 @@ int TIFFMergeFieldInfo(TIFF *t,const TIFFFieldInfo info[],uint32_t n){
   if(!vt_merge_fields(t->state,info,n)){bridge_fail(t,__func__);return -1;}
   return 0; /* libtiff's legacy registration API returns zero on success. */
 }
-static int initialise_fields(TIFF *t,unsigned kind){
-  t->directory_kind=kind;
-  if(kind)return 1;
+/* A new main directory: the default tag methods, standard fields and the
+   application's tag extender. */
+static int initialise_fields(TIFF *t){
   t->methods.vgetfield=default_getfield;t->methods.vsetfield=default_setfield;t->methods.printdir=NULL;
   vt_fields_begin(t->state);
   TIFFExtendProc f=atomic_load(&tag_extender);if(f)f(t);
@@ -47,70 +47,6 @@ uint32_t TIFFGetTagListEntry(TIFF *t,int index){
   if(!valid(t,__func__)||index<0)return UINT32_MAX;
   return vt_custom_tag(t->state,(uint32_t)index);
 }
-/* One pointer per ColorMap or TransferFunction channel; Rust checks each
-   channel's 1 << BitsPerSample entries against the stored length. */
-static int channels_getfield(TIFF *t,uint32_t tag,va_list ap,int def){
-  uint16_t bits=1,samples=1,extras=0,*extra=NULL;
-  TIFFGetFieldDefaulted(t,TIFFTAG_BITSPERSAMPLE,&bits);TIFFGetFieldDefaulted(t,TIFFTAG_SAMPLESPERPIXEL,&samples);TIFFGetFieldDefaulted(t,TIFFTAG_EXTRASAMPLES,&extras,&extra);
-  const uint16_t *p[3];size_t n=0;
-  int r=vt_channels(t->state,tag,def,bits,samples,extras,p,&n);
-  if(r<0){bridge_fail(t,"TIFFGetField");return 0;}
-  if(!r)return 0;
-  uint16_t **out[3];
-  for(size_t i=0;i<n;i++)out[i]=va_arg(ap,uint16_t **);
-  for(size_t i=0;i<n;i++)if(!out[i]){fail(t,EINVAL,"TIFFGetField","null output");return 0;}
-  for(size_t i=0;i<n;i++)*out[i]=(uint16_t *)p[i];
-  return 1;
-}
-static int generic_getfield(TIFF *t,uint32_t tag,va_list ap,int def){
-  const TIFFField *f=find_field(t,tag,TIFF_ANY,1,"TIFFGetField");
-  if(!f)return 0; /* Optional absent tags do not raise a decode error. */
-  const uint8_t *data=NULL;size_t n=0;
-  TIFFDataType kind=f->kind;
-  if(!f->size){uint16_t stored=0;vt_field(t->state,tag,&stored,&n);if(!n)return 0;fail(t,ENOSYS,"TIFFGetField","special field convention not implemented");return 0;}
-  int r=vt_typed(t->state,tag,(uint16_t)kind,&data,&n);
-  if(r<0){bridge_fail(t,"TIFFGetField");return 0;}
-  static const double one=1.0;
-  static const float white[]={D50_X0/(D50_X0+D50_Y0+D50_Z0),D50_Y0/(D50_X0+D50_Y0+D50_Z0)};
-  static const float luma[]={0.299f,0.587f,0.114f};
-  if(!r&&def&&tag==TIFFTAG_WHITEPOINT){data=(const uint8_t*)white;n=2;r=1;}
-  if(!r&&def&&tag==TIFFTAG_YCBCRCOEFFICIENTS){data=(const uint8_t*)luma;n=3;r=1;}
-  if(!r&&def&&tag==TIFFTAG_REFERENCEBLACKWHITE){
-    uint16_t bits=1,photo=1;TIFFGetFieldDefaulted(t,TIFFTAG_BITSPERSAMPLE,&bits);TIFFGetFieldDefaulted(t,TIFFTAG_PHOTOMETRIC,&photo);
-    float white=(float)(pow(2.,bits)-1.);for(int i=0;i<6;i++)t->default_reference[i]=(i%2)?white:0.;
-    if(photo==PHOTOMETRIC_YCBCR){t->default_reference[1]=t->default_reference[3]=t->default_reference[5]=255.;t->default_reference[2]=t->default_reference[4]=128.;}
-    data=(const uint8_t*)t->default_reference;n=6;r=1;
-  }
-  if(!r&&def&&tag==TIFFTAG_STONITS){data=(const uint8_t*)&one;n=1;r=1;}
-  if(!r)return 0;
-  unsigned plan=vt_field_plan((uint16_t)kind,f->read_count,f->pass_count,(size_t)f->count_size,f->array,(size_t)f->size,n);
-  if(!plan){fail(t,EINVAL,"TIFFGetField","field schema/count mismatch");return 0;}
-  if(plan==3||plan==4){
-    uint32_t *c32=NULL;uint16_t *c16=NULL;
-    if(plan==4)c32=va_arg(ap,uint32_t*);else c16=va_arg(ap,uint16_t*);
-    void **out=va_arg(ap,void **);if((plan==4?!c32:!c16)||!out)return 0;
-    /* Like libtiff, a value with no elements has no data pointer. */
-    if(plan==4)*c32=(uint32_t)n;else *c16=(uint16_t)n;*out=n?(void*)data:NULL;
-  }else if(plan==2){void **out=va_arg(ap,void **);if(!out)return 0;*out=(void*)data;}
-  else{
-#define VT_SCALAR(T) do{T *out=va_arg(ap,T*);if(!out)return 0;memcpy(out,data,sizeof(T));}while(0)
-    switch(kind){
-      case TIFF_BYTE:case TIFF_UNDEFINED:VT_SCALAR(uint8_t);break;
-      case TIFF_SBYTE:VT_SCALAR(int8_t);break;
-      case TIFF_SHORT:VT_SCALAR(uint16_t);break;
-      case TIFF_SSHORT:VT_SCALAR(int16_t);break;
-      case TIFF_LONG:case TIFF_IFD:VT_SCALAR(uint32_t);break;
-      case TIFF_SLONG:VT_SCALAR(int32_t);break;
-      case TIFF_LONG8:case TIFF_IFD8:VT_SCALAR(uint64_t);break;
-      case TIFF_SLONG8:VT_SCALAR(int64_t);break;
-      case TIFF_FLOAT:VT_SCALAR(float);break;
-      case TIFF_DOUBLE:VT_SCALAR(double);break;
-      default:return 0;
-    }
-#undef VT_SCALAR
-  }
-  return 1;
-}
 static void unknown_warnings(TIFF *t){
   if(!t->options.warn_unknown)return;
   size_t at=0;uint32_t tag;
@@ -118,11 +54,11 @@ static void unknown_warnings(TIFF *t){
 }
 int TIFFReadEXIFDirectory(TIFF *t,uint64_t off){
   if(!valid(t,__func__))return 0;
-  if(!vt_custom_dir(t->state,off,1)){bridge_fail(t,__func__);return 0;}return initialise_fields(t,1);
+  if(!vt_custom_dir(t->state,off,1)){bridge_fail(t,__func__);return 0;}return 1;
 }
 int TIFFReadGPSDirectory(TIFF *t,uint64_t off){
   if(!valid(t,__func__))return 0;
-  if(!vt_custom_dir(t->state,off,2)){bridge_fail(t,__func__);return 0;}return initialise_fields(t,2);
+  if(!vt_custom_dir(t->state,off,2)){bridge_fail(t,__func__);return 0;}return 1;
 }
 static int generic_setfield(TIFF *t,uint32_t tag,va_list ap){
   const TIFFField *f=find_field(t,tag,TIFF_ANY,0,"TIFFSetField");

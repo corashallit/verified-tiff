@@ -96,7 +96,7 @@ void TIFFPrintDirectory(TIFF *t,FILE *file,long flags){
 int TIFFReadCustomDirectory(TIFF *t,toff_t off,const TIFFFieldArray *array){
   if(!valid(t,__func__))return 0;
   if(!vt_read_custom_directory(t->state,off,array)){bridge_fail(t,__func__);return 0;}
-  t->directory_kind=3;return 1;
+  return 1;
 }
 
 int TIFFSetFileno(TIFF *t,int fd){if(!valid(t,__func__))return -1;int old=t->fd;t->fd=fd;return old;}

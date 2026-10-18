@@ -73,6 +73,7 @@ mod store;
 mod index;
 mod fields;
 mod schema;
+mod get;
 use storage::{Buf,Mem,Memory,Source,Backend,ReadProc,SeekProc};
 use directory::*;
 use store::{Store,Values};
@@ -96,6 +97,8 @@ struct Handle{
     /// libtiff's current row, strip and tile.
     position:[u32;3],
     fields:fields::Fields,
+    /// The ReferenceBlackWhite default TIFFGetFieldDefaulted last gave.
+    default_reference:[f32;6],
 }
 impl Handle{
     fn open(mut source:Source,output:usize,work:usize,flags:u32)->R<Self>{
@@ -109,7 +112,7 @@ impl Handle{
         let mut chain=Buf::new(1,&source.mem)?;if meta.off!=0{chain.push(meta.off)?;}
         // Like libtiff, a header-only open has no current directory yet.
         let page=if !writing&&flags&2!=0{u32::MAX}else{0};
-        Ok(Self{writing,converted,directory_kind:0,position:[u32::MAX;3],fields,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
+        Ok(Self{writing,converted,directory_kind:0,default_reference:[0.;6],position:[u32::MAX;3],fields,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
     }
     fn set_offset(&mut self,off:u64,page:u32)->R<()>{
         let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop,self.deferred)?;
@@ -179,59 +182,6 @@ pub unsafe extern "C" fn vt_select(p: *mut c_void, page: u32) -> i32 {
         Ok(1)
     })
 }
-// Scalar metadata operations; output points to a C-owned uint64_t.
-#[no_mangle]
-pub unsafe extern "C" fn vt_scalar(p: *mut c_void, key: u32, defaulted: i32, out: *mut u64) -> i32 {
-    guard(-1, || {
-        let h = handle(p)?;
-        if out.is_null() {
-            return Err((INVALID, "null metadata output"));
-        }
-        let m = &h.meta;
-        let short = u16::try_from(key).ok();
-        let def = match short {
-            Some(tag::BITSPERSAMPLE | tag::FILLORDER | tag::ORIENTATION | tag::SAMPLESPERPIXEL | tag::PLANARCONFIG
-                | tag::PREDICTOR | tag::SAMPLEFORMAT | tag::COMPRESSION | tag::THRESHHOLDING | tag::INKSET
-                | tag::YCBCRPOSITIONING) => Some(1),
-            Some(tag::RESOLUTIONUNIT) => Some(2),
-            Some(tag::GROUP3OPTIONS | tag::GROUP4OPTIONS | tag::SUBFILETYPE | tag::MINSAMPLEVALUE) => Some(0),
-            Some(tag::MAXSAMPLEVALUE) => Some((1u64 << m.bits.min(16))-1),
-            Some(tag::NUMBEROFINKS) => Some(4),
-            Some(tag::ROWSPERSTRIP) => Some(u32::MAX as u64),
-            _ => None,
-        };
-        let logluv_native = m.compression==34676 && m.photo==32845 && !h.logluv16;
-        let value = if logluv_native && matches!(short, Some(tag::BITSPERSAMPLE | tag::SAMPLEFORMAT)) {
-            if short == Some(tag::BITSPERSAMPLE) {32} else {3}
-        } else if key == tag::JPEGCOLORMODE {
-            h.jpeg_rgb as u64
-        } else if key == tag::SGILOGDATAFMT {
-            if h.logluv16 {
-                1
-            } else {
-                0
-            }
-        } else if short==Some(tag::ROWSPERSTRIP) && m.rows>0 {
-            if !m.rows_set && defaulted==0 {return Ok(0);}
-            m.rows as u64
-        } else {
-            let Some(t) = find(&m.tags, key as u16) else {
-                // libtiff's directory reader always sets these two.
-                let implied = !h.writing && h.directory_kind == 0 && matches!(short, Some(tag::COMPRESSION | tag::PLANARCONFIG));
-                if defaulted != 0 || implied {
-                    if let Some(v) = def {
-                        *out = v;
-                        return Ok(1);
-                    }
-                }
-                return Ok(0);
-            };
-            value(&h.data, t, 0, m.le)?
-        };
-        *out = value;
-        Ok(1)
-    })
-}
 #[no_mangle]
 pub unsafe extern "C" fn vt_info(p: *mut c_void, key: u32) -> u64 {
     guard(u64::MAX, || {
@@ -257,36 +207,6 @@ pub unsafe extern "C" fn vt_info(p: *mut c_void, key: u32) -> u64 {
             16 => m.photo,
             _ => return Err((INVALID, "unknown adapter info")),
         })
-    })
-}
-#[no_mangle]
-pub unsafe extern "C" fn vt_array(p: *mut c_void, key: u32, len: *mut usize) -> *const c_void {
-    guard(ptr::null(), || {
-        let h = handle(p)?;
-        if len.is_null() {
-            return Err((INVALID, "null array length"));
-        }
-        let m = &mut h.meta;
-        let set=|k|find(&m.tags,k).is_some();
-        let short=u16::try_from(key).ok();
-        let offsets=matches!(short,Some(tag::STRIPOFFSETS|tag::TILEOFFSETS));
-        let counts=matches!(short,Some(tag::STRIPBYTECOUNTS|tag::TILEBYTECOUNTS));
-        let present=if offsets{set(tag::STRIPOFFSETS)||set(tag::TILEOFFSETS)}
-            else if counts{set(tag::STRIPBYTECOUNTS)||set(tag::TILEBYTECOUNTS)}
-            else{short==Some(tag::EXTRASAMPLES)||set(key as u16)};
-        if !present{return Ok(ptr::null());}
-        if offsets{m.offsets.materialize(&mut h.source)?;}
-        if counts{m.counts.materialize(&mut h.source)?;}
-        let (at, n) = match short {
-            _ if offsets => (m.offsets.values.as_ptr().cast(), m.offsets.len()),
-            _ if counts => (m.counts.values.as_ptr().cast(), m.counts.len()),
-            Some(tag::COLORMAP) => (m.map.as_ptr().cast(), m.map.len()),
-            Some(tag::EXTRASAMPLES) => (m.extra.as_ptr().cast(), m.extra.len()),
-            Some(tag::SUBIFD) => (m.subifds.as_ptr().cast(),m.subifds.len()),
-            _ => return Err((NOTIMPL, "metadata array not implemented")),
-        };
-        *len = n;
-        Ok(if n == 0 { ptr::null() } else { at })
     })
 }
 #[no_mangle]
@@ -388,16 +308,6 @@ pub unsafe extern "C" fn vt_next(p:*mut c_void)->i32{
         let page=if h.meta.off==0{0}else{h.page.saturating_add(1)};h.set_offset(off,page)?;h.chain_steps=steps;h.chain.push(off)?;Ok(1)})
 }
 #[no_mangle]
-pub unsafe extern "C" fn vt_field(p:*mut c_void,key:u32,kind:*mut u16,count:*mut usize)->*const u8{
-    guard(ptr::null(),||{let h=handle(p)?;if kind.is_null()||count.is_null(){return Err((INVALID,"null metadata output"));}let Some(t)=find(&h.meta.tags,key as u16) else{return Ok(ptr::null());};if t.remote.is_some(){return Err((NOTIMPL,"use strile accessor for deferred arrays"));}let bytes=h.data.bytes(&t);verified_tiff::adapter_meta::payload(bytes.len(),t.at,t.count,t.kind).map_err(err)?;*kind=t.kind;*count=t.count;Ok(bytes.as_ptr().add(t.at))})
-}
-#[no_mangle]
-pub unsafe extern "C" fn vt_real(p:*mut c_void,key:u32,out:*mut f32)->i32{
-    guard(-1,||{let h=handle(p)?;if out.is_null(){return Err((INVALID,"null metadata output"));}let Some(t)=find(&h.meta.tags,key as u16) else{return Ok(0);};if t.count!=1{return Err((INVALID,"scalar real field count"));}
-        let s=h.data.bytes(&t);
-        let v=match t.kind{5=>{let a=u32at(s,t.at,h.meta.le)?;let b=u32at(s,t.at+4,h.meta.le)?;if b==0{return Err((INVALID,"zero rational denominator"));}a as f32/b as f32},11=>f32::from_bits(u32at(s,t.at,h.meta.le)?),12=>f64::from_bits(verified_tiff::native_samples::read_word(s,t.at,8,h.meta.le).map_err(err)?) as f32,_=>return Err((NOTIMPL,"real field type not implemented"))};*out=v;Ok(1)})
-}
-#[no_mangle]
 pub unsafe extern "C" fn vt_tag(p:*mut c_void,index:usize)->u32{guard(u32::MAX,||{let h=handle(p)?;Ok(h.meta.tags.get(index).ok_or((INVALID,"tag index out of range"))?.key as u32)})}
 #[no_mangle]
 pub unsafe extern "C" fn vt_region(p:*mut c_void,x:u32,y:u32,w:u32,ht:u32,source:u32,orientation:u32,len:*mut usize)->*const u8{
@@ -405,13 +315,6 @@ pub unsafe extern "C" fn vt_region(p:*mut c_void,x:u32,y:u32,w:u32,ht:u32,source
         // libtiff applies no flip for a source orientation it does not know.
         let source=if (1..=8).contains(&source){source}else{orientation};
         h.rgba_from(x as usize,y as usize,w as usize,ht as usize,source as usize,orientation as usize)?;let b=h.rendered.as_ref().ok_or((5,"missing RGBA output"))?;*len=b.len();Ok(b.as_ptr())})
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn vt_pair(p:*mut c_void,key:u32,defaulted:i32,out:*mut u16)->i32{
-    guard(-1,||{let h=handle(p)?;if out.is_null(){return Err((INVALID,"null pair output"));}
-        let pair=if let Some(t)=find(&h.meta.tags,key as u16){if t.count!=2{return Err((INVALID,"pair field count"));}[u16::try_from(value(&h.data,t,0,h.meta.le)?).map_err(|_|(INVALID,"pair overflow"))?,u16::try_from(value(&h.data,t,1,h.meta.le)?).map_err(|_|(INVALID,"pair overflow"))?]}else if defaulted!=0 && key==u32::from(tag::YCBCRSUBSAMPLING){[2,2]}else{return Ok(0);};
-        *out=pair[0];*out.add(1)=pair[1];Ok(1)})
 }
 
 #[no_mangle]

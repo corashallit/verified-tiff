@@ -32,11 +32,10 @@ struct tiff {
   TIFFMapFileProc map;
   TIFFUnmapFileProc unmap;
   struct TIFFOpenOptions options;
-  uint32_t flags, directory_kind;
+  uint32_t flags;
   struct vt_client_info *client_info;
   TIFFTagMethods methods;
   int directory_written;
-  float default_reference[6];
 };
 static _Thread_local int last_code;
 static _Thread_local char last_message[512];
@@ -269,9 +268,7 @@ static void unknown_warnings(TIFF *t);
 static void free_client_info(TIFF *t);
 static int default_getfield(TIFF *,uint32_t,va_list);
 static int default_setfield(TIFF *,uint32_t,va_list);
-static int initialise_fields(TIFF *t, unsigned kind);
-static int generic_getfield(TIFF *t, uint32_t tag, va_list ap, int def);
-static int channels_getfield(TIFF *t, uint32_t tag, va_list ap, int def);
+static int initialise_fields(TIFF *t);
 static int generic_setfield(TIFF *t,uint32_t tag,va_list ap);
 static TIFF *new_handle(const char *name, const char *mode,
                         TIFFOpenOptions *options) {
@@ -333,7 +330,7 @@ TIFF *TIFFFdOpenExt(int fd, const char *name, const char *mode,
     return NULL;
   }
   t->fd = fd;t->owned_fd=fd;
-  if (!initialise_fields(t,0)) {destroy(t);return NULL;}
+  if (!initialise_fields(t)) {destroy(t);return NULL;}
   unknown_warnings(t);
   return t;
 }
@@ -402,7 +399,7 @@ TIFF *TIFFClientOpenExt(const char *name, const char *mode, thandle_t client,
     destroy(t);
     return NULL;
   }
-  if (!initialise_fields(t,0)) {destroy(t);return NULL;}
+  if (!initialise_fields(t)) {destroy(t);return NULL;}
   unknown_warnings(t);
   return t;
 }
@@ -484,7 +481,7 @@ int TIFFSetDirectory(TIFF *t, tdir_t d) {
     bridge_fail(t, __func__);
     return 0;
   }
-  if (!initialise_fields(t,0)) return 0;
+  if (!initialise_fields(t)) return 0;
   unknown_warnings(t);
   return 1;
 }
@@ -492,7 +489,7 @@ int TIFFReadDirectory(TIFF *t) {
   if (!valid(t, __func__) || TIFFLastDirectory(t))
     return 0;
   if (!vt_next(t->state)) { bridge_fail(t, __func__); return 0; }
-  if (!initialise_fields(t,0)) return 0;
+  if (!initialise_fields(t)) return 0;
   unknown_warnings(t);
   return 1;
 }
@@ -503,162 +500,58 @@ int TIFFSetSubDirectory(TIFF *t, uint64_t off) {
     bridge_fail(t, __func__);
     return 0;
   }
-  if (!initialise_fields(t,0)) return 0;
+  if (!initialise_fields(t)) return 0;
   unknown_warnings(t);
   return 1;
 }
+/* TIFFGetField writes the values compat/src/get.rs plans for the tag through
+   the caller's pointers. Each pointer is read with the C type of its value;
+   values of one width are stored alike. */
 static int getfield(TIFF *t, uint32_t tag, va_list ap, int def) {
   if (!valid(t, "TIFFGetField"))
     return 0;
-  if (t->directory_kind) return generic_getfield(t,tag,ap,def);
-  uint64_t v = 0;
-  int kind = 0;
-  switch (tag) {
-  case TIFFTAG_SUBFILETYPE:
-  case TIFFTAG_IMAGEWIDTH:
-  case TIFFTAG_IMAGELENGTH:
-  case TIFFTAG_ROWSPERSTRIP:
-  case TIFFTAG_TILEWIDTH:
-  case TIFFTAG_TILELENGTH:
-  case TIFFTAG_GROUP3OPTIONS:
-  case TIFFTAG_GROUP4OPTIONS:
-    kind = 32;
-    break;
-  case TIFFTAG_THRESHHOLDING:
-  case TIFFTAG_CELLWIDTH:
-  case TIFFTAG_CELLLENGTH:
-  case TIFFTAG_MINSAMPLEVALUE:
-  case TIFFTAG_MAXSAMPLEVALUE:
-  case TIFFTAG_INKSET:
-  case TIFFTAG_NUMBEROFINKS:
-  case TIFFTAG_YCBCRPOSITIONING:
-  case TIFFTAG_BITSPERSAMPLE:
-  case TIFFTAG_COMPRESSION:
-  case TIFFTAG_PHOTOMETRIC:
-  case TIFFTAG_FILLORDER:
-  case TIFFTAG_ORIENTATION:
-  case TIFFTAG_SAMPLESPERPIXEL:
-  case TIFFTAG_PLANARCONFIG:
-  case TIFFTAG_RESOLUTIONUNIT:
-  case TIFFTAG_PREDICTOR:
-  case TIFFTAG_SAMPLEFORMAT:
-    kind = 16;
-    break;
-  case TIFFTAG_JPEGCOLORMODE:
-  case TIFFTAG_SGILOGDATAFMT:
-    kind = -32;
-    break;
-  case TIFFTAG_STRIPOFFSETS:
-  case TIFFTAG_STRIPBYTECOUNTS:
-  case TIFFTAG_TILEOFFSETS:
-  case TIFFTAG_TILEBYTECOUNTS: {
-    size_t n = 0;
-    const void *p = vt_array(t->state, tag, &n);
-    if (!n)
-      return 0;
-    uint64_t **out = va_arg(ap, uint64_t **);
-    if (!out)
-      goto bad;
-    *out = (uint64_t *)p;
-    return 1;
+  struct vt_plan plan;
+  int r = vt_get(t->state, tag, def, &plan);
+  if (r < 0) {
+    bridge_fail(t, "TIFFGetField");
+    return 0;
   }
-  case TIFFTAG_EXTRASAMPLES: {
-    /* Extra samples implied by the photometric are only defaulted. */
-    uint16_t kind = 0;
-    size_t n = 0;
-    if (!def && !vt_field(t->state, tag, &kind, &n))
-      return 0;
-    const void *p = vt_array(t->state, tag, &n);
-    uint16_t *count = va_arg(ap, uint16_t *);
-    uint16_t **out = va_arg(ap, uint16_t **);
-    if (!count || !out)
-      goto bad;
-    *count = (uint16_t)n;
-    *out = (uint16_t *)p;
-    return 1;
-  }
-  case TIFFTAG_COLORMAP:
-  case TIFFTAG_TRANSFERFUNCTION:
-    return channels_getfield(t, tag, ap, def);
-  case TIFFTAG_SUBIFD: {
-    size_t n=0; const void *p=vt_array(t->state,tag,&n);
-    if (!n) return 0;
-    uint16_t *count=va_arg(ap,uint16_t *); uint64_t **out=va_arg(ap,uint64_t **);
-    if (!count || !out || n>UINT16_MAX) goto bad;
-    *count=(uint16_t)n; *out=(uint64_t *)p; return 1;
-  }
-  case TIFFTAG_XRESOLUTION: case TIFFTAG_YRESOLUTION:
-  case TIFFTAG_XPOSITION: case TIFFTAG_YPOSITION: {
-    float value; int ok=vt_real(t->state,tag,&value);
-    if (ok<0) { bridge_fail(t,"TIFFGetField"); return 0; } if (!ok) return 0;
-    float *out=va_arg(ap,float *); if (!out) goto bad;
-    *out=value; return 1;
-  }
-  case TIFFTAG_YCBCRSUBSAMPLING: case TIFFTAG_PAGENUMBER:
-  case TIFFTAG_HALFTONEHINTS: case TIFFTAG_DOTRANGE: {
-    uint16_t values[2]; int ok=vt_pair(t->state,tag,def,values);
-    if (ok<0) { bridge_fail(t,"TIFFGetField"); return 0; } if (!ok) return 0;
-    uint16_t *a=va_arg(ap,uint16_t *), *b=va_arg(ap,uint16_t *);
-    if (!a || !b) goto bad;
-    *a=values[0]; *b=values[1]; return 1;
-  }
-  case TIFFTAG_EXIFIFD: case TIFFTAG_GPSIFD:
-    kind=64; break;
-  /* InkNames has a counted setter, but its getter takes only char **. */
-  case TIFFTAG_INKNAMES: case TIFFTAG_DOCUMENTNAME: case TIFFTAG_IMAGEDESCRIPTION:
-  case TIFFTAG_MAKE: case TIFFTAG_MODEL: case TIFFTAG_PAGENAME:
-  case TIFFTAG_SOFTWARE: case TIFFTAG_DATETIME: case TIFFTAG_ARTIST:
-  case TIFFTAG_HOSTCOMPUTER: case TIFFTAG_COPYRIGHT: case TIFFTAG_TARGETPRINTER: {
-    uint16_t type=0; size_t n=0; const uint8_t *p=vt_field(t->state,tag,&type,&n);
-    if (!p) return 0;
-    if (type!=TIFF_ASCII) goto bad;
-    char **out=va_arg(ap,char **); if (!out) goto bad;
-    *out=(char *)p; return 1;
-  }
-  case TIFFTAG_ICCPROFILE: case TIFFTAG_XMLPACKET: case TIFFTAG_PHOTOSHOP:
-  case TIFFTAG_JPEGTABLES: {
-    uint16_t type=0; size_t n=0; const uint8_t *p=vt_field(t->state,tag,&type,&n);
-    if (!p) return 0;
-    if ((type!=TIFF_BYTE && type!=TIFF_UNDEFINED) || n>UINT32_MAX) goto bad;
-    uint32_t *count=va_arg(ap,uint32_t *); void **out=va_arg(ap,void **);
-    if (!count || !out) goto bad;
-    *count=(uint32_t)n; *out=(void *)p; return 1;
-  }
-  default:
-    return generic_getfield(t,tag,ap,def);
-  }
-  {
-    int ok = vt_scalar(t->state, tag, def, &v);
-    if (ok < 0) {
-      bridge_fail(t, "TIFFGetField");
+  if (!r)
+    return 0;
+  void *out[3];
+  for (size_t i = 0; i < plan.count; i++)
+    switch (plan.value[i].type) {
+    case VT_U8: out[i] = va_arg(ap, uint8_t *); break;
+    case VT_I8: out[i] = va_arg(ap, int8_t *); break;
+    case VT_U16: out[i] = va_arg(ap, uint16_t *); break;
+    case VT_I16: out[i] = va_arg(ap, int16_t *); break;
+    case VT_U32: out[i] = va_arg(ap, uint32_t *); break;
+    case VT_I32: out[i] = va_arg(ap, int32_t *); break;
+    case VT_U64: out[i] = va_arg(ap, uint64_t *); break;
+    case VT_I64: out[i] = va_arg(ap, int64_t *); break;
+    case VT_FLOAT: out[i] = va_arg(ap, float *); break;
+    case VT_DOUBLE: out[i] = va_arg(ap, double *); break;
+    default: out[i] = va_arg(ap, void **); break;
+    }
+  for (size_t i = 0; i < plan.count; i++)
+    if (!out[i]) {
+      fail(t, EINVAL, "TIFFGetField", "null output");
       return 0;
     }
-    if (!ok)
-      return 0;
-  }
-  if (kind == 16) {
-    uint16_t *out = va_arg(ap, uint16_t *);
-    if (!out || v > UINT16_MAX)
-      goto bad;
-    *out = (uint16_t)v;
-  } else if (kind == 64) {
-    uint64_t *out=va_arg(ap,uint64_t *); if (!out) goto bad;
-    *out=v;
-  } else if (kind == -32) {
-    int *out = va_arg(ap, int *);
-    if (!out || v > INT_MAX)
-      goto bad;
-    *out = (int)v;
-  } else {
-    uint32_t *out = va_arg(ap, uint32_t *);
-    if (!out || v > UINT32_MAX)
-      goto bad;
-    *out = (uint32_t)v;
+  for (size_t i = 0; i < plan.count; i++) {
+    const struct vt_value *v = &plan.value[i];
+    uint8_t b8 = (uint8_t)v->bits;
+    uint16_t b16 = (uint16_t)v->bits;
+    uint32_t b32 = (uint32_t)v->bits;
+    switch (v->type) {
+    case VT_U8: case VT_I8: memcpy(out[i], &b8, sizeof b8); break;
+    case VT_U16: case VT_I16: memcpy(out[i], &b16, sizeof b16); break;
+    case VT_U32: case VT_I32: case VT_FLOAT: memcpy(out[i], &b32, sizeof b32); break;
+    case VT_U64: case VT_I64: case VT_DOUBLE: memcpy(out[i], &v->bits, sizeof v->bits); break;
+    default: *(void **)out[i] = (void *)v->pointer; break;
+    }
   }
   return 1;
-bad:
-  fail(t, EINVAL, "TIFFGetField", "null output or metadata width mismatch");
-  return 0;
 }
 static int default_getfield(TIFF *t,uint32_t k,va_list ap){return getfield(t,k,ap,0);}
 int TIFFVGetField(TIFF *t, uint32_t k, va_list ap) {

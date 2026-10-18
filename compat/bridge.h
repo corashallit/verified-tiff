@@ -27,10 +27,6 @@ int vt_read_buffer(void *,uint8_t *,size_t);
 int vt_unset(void *,uint32_t);
 int vt_free_directory(void *);
 int vt_strile(void *,uint32_t,int,uint64_t *);
-const uint8_t *vt_field(void *, uint32_t, uint16_t *, size_t *);
-int vt_real(void *, uint32_t, float *);
-int vt_pair(void *, uint32_t, int, uint16_t *);
-int vt_channels(void *, uint32_t, int, uint16_t, uint16_t, uint16_t, const uint16_t **, size_t *);
 uint32_t vt_tag(void *, size_t);
 const uint8_t *vt_region(void *,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,size_t *);
 void vt_close(void *);
@@ -48,7 +44,6 @@ const char *vt_error_message(void);
 int vt_select(void *, uint32_t);
 int vt_scalar(void *, uint32_t, int, uint64_t *);
 uint64_t vt_info(void *, uint32_t);
-const void *vt_array(void *, uint32_t, size_t *);
 uint32_t vt_count_dirs(void *);
 int vt_set_offset(void *, uint64_t);
 int64_t vt_size(void *, uint32_t, uint32_t);
@@ -67,7 +62,6 @@ int vt_field_named(void *, const char *, const TIFFField **);
 uint32_t vt_custom_tags(void *);
 uint32_t vt_custom_tag(void *, uint32_t);
 uint32_t vt_unknown_tag(void *, size_t *);
-uint8_t vt_field_plan(uint16_t,int,int,size_t,int,size_t,size_t);
 uint32_t vt_color_index(uint32_t,uint32_t);
 uint32_t vt_ycbcr_tables(int32_t,int32_t,int32_t,int32_t,int32_t);
 int vt_commit(uint8_t *,size_t,size_t,const uint8_t *,size_t);
@@ -75,6 +69,20 @@ int64_t vt_strips(void *);
 int vt_check_tile(void *,uint32_t,uint32_t,uint32_t,uint16_t);
 int vt_compute_tile(void *,uint32_t,uint32_t,uint32_t,uint16_t,uint32_t *);
 int vt_compute_strip(void *,uint32_t,uint16_t,uint32_t *);
+/* The values TIFFGetField writes through the caller's pointers, and their C
+   types, as compat/src/get.rs plans them. */
+enum { VT_U8, VT_I8, VT_U16, VT_I16, VT_U32, VT_I32, VT_U64, VT_I64, VT_FLOAT, VT_DOUBLE, VT_POINTER };
+struct vt_value {
+  uint32_t type;
+  uint64_t bits;
+  const void *pointer;
+};
+struct vt_plan {
+  size_t count;
+  struct vt_value value[3];
+};
+_Static_assert(sizeof(struct vt_value) == 24 && sizeof(struct vt_plan) == 80, "plan layout");
+int vt_get(void *, uint32_t, int, struct vt_plan *);
 /* Image positions, and the reads that set them (compat/src/index.rs). */
 enum { VT_ROW, VT_STRIP, VT_TILE };
 uint32_t vt_position(void *,uint32_t);

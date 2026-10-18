@@ -57,7 +57,7 @@ impl Handle{
         meta.keep_arrays(&mut self.meta);
         self.meta=meta;self.stream=None;self.cache=None;self.rendered=None;Ok(())
     }
-    fn typed(&mut self,key:u32,kind:u16)->R<Option<(*const u8,usize)>>{
+    pub fn typed(&mut self,key:u32,kind:u16)->R<Option<(*const u8,usize)>>{
         if let Some(v)=self.converted.iter().find(|v|v.key==key&&v.kind==kind){return Ok(Some((v.data.as_ptr().cast(),v.n)));}
         let Some(t)=find(&self.meta.tags,u16::try_from(key).map_err(|_|(INVALID,"tag overflow"))?)else{return Ok(None);};
         if t.remote.is_some(){return Err((NOTIMPL,"use strile accessor for deferred arrays"));}
@@ -79,7 +79,7 @@ impl Handle{
     }
     /// libtiff's default TransferFunction curve of `n` entries. Like a stored
     /// value, it stays until the directory changes or the field is set.
-    fn default_transfer(&mut self,n:usize)->R<(*const u8,usize)>{
+    pub fn default_transfer(&mut self,n:usize)->R<(*const u8,usize)>{
         if let Some(v)=self.converted.iter().find(|v|v.key==u32::from(tag::TRANSFERFUNCTION)&&v.kind==0&&v.n==n){return Ok((v.data.as_ptr().cast(),n));}
         let mut data=native(n,2,0,&self.source.mem)?;
         for i in 1..n{set_native(&mut data,i,2,(65535.*(i as f64/(n as f64-1.)).powf(2.2)+0.5).floor() as u64);}
@@ -98,27 +98,6 @@ fn native(n:usize,w:usize,extra:usize,mem:&Mem)->R<Buf<u64>>{
 fn set_native(data:&mut [u64],i:usize,w:usize,value:u64){
     let b=value.to_ne_bytes();let from=if cfg!(target_endian="big"){8-w}else{0};
     for j in 0..w{let p=i*w+j;let mut a=data[p/8].to_ne_bytes();a[p%8]=b[from+j];data[p/8]=u64::from_ne_bytes(a);}
-}
-/// A ColorMap's or TransferFunction's channel pointers: 1 when present, 0
-/// when absent or not of a length the bit depth implies. Like libtiff, a
-/// defaulted TransferFunction that is absent or of such a length is its
-/// default curve.
-#[no_mangle]
-pub unsafe extern "C" fn vt_channels(p:*mut c_void,key:u32,defaulted:i32,bits:u16,samples:u16,extras:u16,out:*mut *const u16,parts:*mut usize)->i32{
-    guard(-1,||{
-        let h=handle(p)?;if out.is_null()||parts.is_null(){return Err((INVALID,"null channel output"));}
-        let colormap=match u16::try_from(key){Ok(tag::COLORMAP)=>true,Ok(tag::TRANSFERFUNCTION)=>false,_=>return Err((INVALID,"not a channel array"))};
-        let layout=|n:usize|checked::channels(colormap,n,bits,samples,extras).ok();
-        let (base,n)=match h.typed(key,3)?{
-            Some((base,n)) if layout(n).is_some()=>(base,n),
-            _ if !colormap&&defaulted!=0&&bits<=16=>h.default_transfer(1usize<<bits)?,
-            _=>return Ok(0),
-        };
-        let Some(c)=layout(n) else{return Ok(0);};
-        // Each channel lies within the n entries, as the layout proves.
-        for i in 0..c.parts{*out.add(i)=base.cast::<u16>().add(i*c.stride);}
-        *parts=c.parts;Ok(1)
-    })
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_put(p:*mut c_void,key:u32,kind:u16,count:usize,input:*const u8)->i32{
@@ -172,11 +151,4 @@ pub unsafe extern "C" fn vt_put_real(p:*mut c_void,key:u32,kind:u16,host:u16,cou
             raw.extend(&if h.meta.le{a.to_le_bytes()}else{a.to_be_bytes()})?;raw.extend(&if h.meta.le{b.to_le_bytes()}else{b.to_be_bytes()})?;
         }
         h.put(u16::try_from(key).map_err(|_|(INVALID,"tag overflow"))?,kind,count,&raw)?;Ok(1)})
-}
-
-// Stateless ABI glue: no file metadata is allowed to choose the calling shape.
-#[no_mangle]
-pub extern "C" fn vt_field_plan(kind:u16,fixed:i32,pass:i32,count_width:usize,array:i32,size:usize,n:usize)->u8{
-    if size!=container::field_size(kind){return 0;}
-    checked::get_plan(kind,fixed,pass!=0,count_width,array!=0,n)
 }

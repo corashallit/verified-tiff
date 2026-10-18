@@ -42,10 +42,9 @@ static uint32_t fault_tag;
 static int fault_rc;
 static uint64_t fault_value;
 static size_t fault_len;
-static uint16_t fault_kind;
 static union {long double align;uint8_t bytes[262144];} scratch;
 static int injecting(const char *name,uint32_t tag){return fault && !strcmp(fault,name) && (!fault_tag||fault_tag==tag);}
-static void inject(const char *name,int rc){fault=name;fault_tag=0;fault_rc=rc;fault_value=0;fault_len=0;fault_kind=0;}
+static void inject(const char *name,int rc){fault=name;fault_tag=0;fault_rc=rc;fault_value=0;fault_len=0;}
 static void clear_fault(void){fault=NULL;alloc_fail=-1;alloc_calls=0;}
 int __real_vt_error_code(void);
 int __wrap_vt_error_code(void){return fault?EIO:__real_vt_error_code();}
@@ -65,18 +64,11 @@ int64_t __real_vt_size(void*,uint32_t,uint32_t);
 int64_t __wrap_vt_size(void*p,uint32_t k,uint32_t n){return injecting("vt_size",k)?(int64_t)fault_value:__real_vt_size(p,k,n);}
 int __real_vt_scalar(void*,uint32_t,int,uint64_t*);
 int __wrap_vt_scalar(void*p,uint32_t k,int d,uint64_t*v){if(injecting("vt_scalar",k)){*v=fault_value;return fault_rc;}return __real_vt_scalar(p,k,d,v);}
-const void *__real_vt_array(void*,uint32_t,size_t*);
-const void *__wrap_vt_array(void*p,uint32_t k,size_t*n){if(injecting("vt_array",k)){*n=fault_len;return fault_rc?scratch.bytes:NULL;}return __real_vt_array(p,k,n);}
-const uint8_t *__real_vt_field(void*,uint32_t,uint16_t*,size_t*);
-const uint8_t *__wrap_vt_field(void*p,uint32_t k,uint16_t*t,size_t*n){if(injecting("vt_field",k)){*n=fault_len;*t=fault_kind;return fault_rc?scratch.bytes:NULL;}return __real_vt_field(p,k,t,n);}
 int __real_vt_typed(void*,uint32_t,uint16_t,const uint8_t**,size_t*);
 int __wrap_vt_typed(void*p,uint32_t k,uint16_t t,const uint8_t**v,size_t*n){if(injecting("vt_typed",k)){*n=fault_len;*v=scratch.bytes;return fault_rc;}return __real_vt_typed(p,k,t,v,n);}
-int __real_vt_real(void*,uint32_t,float*);
-int __wrap_vt_real(void*p,uint32_t k,float*v){return injecting("vt_real",k)?fault_rc:__real_vt_real(p,k,v);}
-int __real_vt_pair(void*,uint32_t,int,uint16_t*);
-int __wrap_vt_pair(void*p,uint32_t k,int d,uint16_t*v){return injecting("vt_pair",k)?fault_rc:__real_vt_pair(p,k,d,v);}
-int __real_vt_channels(void*,uint32_t,int,uint16_t,uint16_t,uint16_t,const uint16_t**,size_t*);
-int __wrap_vt_channels(void*p,uint32_t k,int d,uint16_t b,uint16_t s,uint16_t e,const uint16_t**v,size_t*n){return injecting("vt_channels",k)?fault_rc:__real_vt_channels(p,k,d,b,s,e,v,n);}
+int __real_vt_get(void*,uint32_t,int,struct vt_plan*);
+static const struct vt_plan *fault_plan;
+int __wrap_vt_get(void*p,uint32_t k,int d,struct vt_plan*o){if(injecting("vt_get",k)){if(fault_rc>0)*o=*fault_plan;return fault_rc;}return __real_vt_get(p,k,d,o);}
 int __real_vt_strile(void*,uint32_t,int,uint64_t*);
 int __wrap_vt_strile(void*p,uint32_t k,int c,uint64_t*v){if(injecting("vt_strile",k)){*v=fault_value;return fault_rc;}return __real_vt_strile(p,k,c,v);}
 const uint8_t *__real_vt_read_size(void*,uint32_t,uint32_t,uint32_t,size_t,size_t*);
@@ -199,10 +191,10 @@ static void bridge_failures_test(void){
  inject("vt_count_dirs",0);assert(!TIFFNumberOfDirectories(t));clear_fault();
  inject("vt_strips",0);fault_value=UINT64_MAX;assert(!TIFFNumberOfStrips(t));clear_fault();
  inject("vt_size",0);fault_value=UINT64_MAX;assert(!TIFFScanlineSize64(t));clear_fault();
- inject("vt_scalar",-1);assert(!TIFFGetField(t,256,&u)&&u==0xa5a5a5a5);clear_fault();
- inject("vt_scalar",1);fault_value=UINT64_MAX;assert(!TIFFGetField(t,256,&u)&&u==0xa5a5a5a5);assert(!TIFFGetField(t,258,&h)&&h==0xa5a5);int v=71;assert(!TIFFGetField(t,TIFFTAG_JPEGCOLORMODE,&v)&&v==71);clear_fault();
+ inject("vt_get",-1);assert(!TIFFGetField(t,256,&u)&&u==0xa5a5a5a5);clear_fault();
  assert(!TIFFGetField(t,256,(uint32_t*)NULL));assert(!TIFFGetField(t,258,(uint16_t*)NULL));assert(!TIFFGetField(t,TIFFTAG_JPEGCOLORMODE,(int*)NULL));
- inject("vt_scalar",1);assert(!TIFFGetField(t,TIFFTAG_EXIFIFD,(uint64_t*)NULL));clear_fault();
+ /* A null output leaves every output unchanged. */
+ assert(!TIFFGetFieldDefaulted(t,TIFFTAG_YCBCRSUBSAMPLING,&h,NULL)&&h==0xa5a5);assert(!TIFFGetFieldDefaulted(t,TIFFTAG_YCBCRSUBSAMPLING,NULL,&h));
  inject("vt_strile",1);fault_value=UINT64_MAX;assert(TIFFRawStripSize(t,0)==-1);clear_fault();
  inject("vt_select",0);assert(!TIFFSetDirectory(t,0));clear_fault();inject("vt_set_offset",0);assert(!TIFFSetSubDirectory(t,8));clear_fault();
  inject("vt_rgba_ok",0);assert(!TIFFRGBAImageOK(t,msg)&&msg[0]);assert(!TIFFRGBAImageOK(t,NULL));TIFFRGBAImage img;assert(!TIFFRGBAImageBegin(&img,t,0,msg));clear_fault();
@@ -214,11 +206,8 @@ static void bridge_failures_test(void){
  inject("vt_unset",0);assert(!TIFFUnsetField(t,256));clear_fault();inject("vt_free_directory",0);TIFFFreeDirectory(t);clear_fault();
  inject("vt_clientdata",0);assert(!TIFFSetClientdata(t,(void*)1));clear_fault();
  inject("vt_custom_dir",0);assert(!TIFFReadEXIFDirectory(t,8)&&!TIFFReadGPSDirectory(t,8));clear_fault();
- inject("vt_typed",-1);uint16_t*a=NULL;assert(!TIFFGetField(t,TIFFTAG_WHITEPOINT,&a));clear_fault();
- inject("vt_real",-1);float x;assert(!TIFFGetField(t,TIFFTAG_XRESOLUTION,&x));clear_fault();inject("vt_real",1);assert(!TIFFGetField(t,TIFFTAG_XRESOLUTION,(float*)NULL));clear_fault();
- inject("vt_pair",-1);assert(!TIFFGetField(t,TIFFTAG_PAGENUMBER,&h,&h));clear_fault();inject("vt_pair",1);assert(!TIFFGetField(t,TIFFTAG_PAGENUMBER,NULL,&h)&&!TIFFGetField(t,TIFFTAG_PAGENUMBER,&h,NULL));clear_fault();
- inject("vt_field",1);fault_kind=TIFF_SHORT;fault_len=1;assert(!TIFFGetField(t,TIFFTAG_SOFTWARE,&a));assert(!TIFFGetField(t,TIFFTAG_ICCPROFILE,&u,&a));fault_kind=TIFF_ASCII;assert(!TIFFGetField(t,TIFFTAG_SOFTWARE,NULL));fault_kind=TIFF_BYTE;fault_len=(size_t)UINT32_MAX+1;assert(!TIFFGetField(t,TIFFTAG_ICCPROFILE,&u,&a));fault_len=1;assert(!TIFFGetField(t,TIFFTAG_ICCPROFILE,NULL,&a)&&!TIFFGetField(t,TIFFTAG_ICCPROFILE,&u,NULL));clear_fault();
- inject("vt_array",1);fault_len=1;assert(!TIFFGetField(t,TIFFTAG_STRIPOFFSETS,NULL));assert(!TIFFGetFieldDefaulted(t,TIFFTAG_EXTRASAMPLES,NULL,&a));assert(!TIFFGetFieldDefaulted(t,TIFFTAG_EXTRASAMPLES,&h,NULL));assert(!TIFFGetField(t,TIFFTAG_SUBIFD,NULL,&a));assert(!TIFFGetField(t,TIFFTAG_SUBIFD,&h,NULL));fault_len=65536;assert(!TIFFGetField(t,TIFFTAG_SUBIFD,&h,&a));clear_fault();
+ uint16_t*a=NULL;assert(!TIFFGetField(t,TIFFTAG_STRIPOFFSETS,NULL));assert(!TIFFGetFieldDefaulted(t,TIFFTAG_EXTRASAMPLES,NULL,&a));assert(!TIFFGetFieldDefaulted(t,TIFFTAG_EXTRASAMPLES,&h,NULL));
+ assert(TIFFSetField(t,TIFFTAG_SOFTWARE,"a")&&!TIFFGetField(t,TIFFTAG_SOFTWARE,NULL));
  TIFFClose(t);
 }
 static TIFFDisplay display_fixture(void){TIFFDisplay d={{{1,0,0},{0,1,0},{0,0,1}},100,200,300,255,255,255,0,0,0,1,1,1};return d;}
@@ -299,11 +288,10 @@ static void fields_failures_test(void){
  for(int i=0;i<2;i++){TIFFFieldInfo rational={64015+(uint32_t)i,1,1,i?TIFF_SRATIONAL:TIFF_RATIONAL,FIELD_CUSTOM,1,0,"Rational"};assert(!TIFFMergeFieldInfo(t,&rational,1));assert(TIFFSetField(t,rational.field_tag,1.25));}
  /* Corrupted internal definitions must fail without extracting output data. */
  TIFFField*node=(TIFFField*)TIFFFindField(t,64016,TIFF_ANY);assert(node);TIFFField saved=*node;node->kind=TIFF_NOTYPE;assert(!TIFFSetField(t,node->tag,0));*node=saved;node->kind=TIFF_ASCII;node->array=0;node->size=1;
- inject("vt_typed",1);fault_len=1;assert(!TIFFGetField(t,node->tag,&a));clear_fault();*node=saved;node->size=0;assert(!TIFFGetField(t,node->tag,&a));inject("vt_field",1);fault_len=0;assert(!TIFFGetField(t,node->tag,&a));clear_fault();*node=saved;
- inject("vt_scalar",1);fault_tag=258;fault_value=17;assert(!TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a));assert(!TIFFSetField(t,TIFFTAG_COLORMAP,a,a,a));clear_fault();
- inject("vt_channels",-1);assert(!TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a));clear_fault();
+ /* The getter reads the field from Rust's registry, not this view. */
+ float real=0;assert(TIFFGetField(t,node->tag,&real)&&real==1.25f);*node=saved;
+ static const struct vt_plan deep={1,{{VT_U16,17,NULL}}};fault_plan=&deep;inject("vt_get",1);fault_tag=TIFFTAG_BITSPERSAMPLE;assert(!TIFFSetField(t,TIFFTAG_COLORMAP,a,a,a));clear_fault();
  assert(TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a));assert(TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a));assert(!TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,NULL));
- inject("vt_scalar",1);fault_tag=258;fault_value=4;assert(TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a));clear_fault();
  assert(!TIFFGetField(t,TIFFTAG_TRANSFERFUNCTION,&a));TIFFFreeDirectory(t);TIFFClose(t);
  t=TIFFOpen(tile_path,"rc");assert(t);assert(TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a,&b,&c));assert(!TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,NULL,&b,&c));assert(!TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a,NULL,&c));assert(!TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a,&b,NULL));TIFFClose(t);
 }
@@ -314,8 +302,8 @@ static void reader_misc_test(void){
  inject("vt_mem_claim",0);TIFFSetClientInfo(t,NULL,"claim-failure");assert(!TIFFGetClientInfo(t,"claim-failure"));assert(!TIFFSetField(t,TIFFTAG_COLORMAP,palette,palette,palette));clear_fault();
  alloc_fail=0;alloc_calls=0;TIFFSetClientInfo(t,NULL,"allocation-failure");assert(!TIFFGetClientInfo(t,"allocation-failure"));clear_fault();alloc_fail=0;alloc_calls=0;assert(!TIFFGetConfiguredCODECs());clear_fault();alloc_fail=0;alloc_calls=0;assert(!TIFFSetField(t,TIFFTAG_COLORMAP,palette,palette,palette));clear_fault();
  inject("vt_put",0);assert(!TIFFSetField(t,TIFFTAG_COLORMAP,palette,palette,palette));clear_fault();assert(!TIFFUnsetField(t,65534));TIFFPrintDirectory(t,NULL,0);
- inject("vt_scalar",-1);assert(!TIFFFindCODEC(1)->init(t,1)&&!TIFFIsUpSampled(t));clear_fault();
- assert(!TIFFGetField(t,TIFFTAG_SUBIFD,&off,&off));inject("vt_real",0);assert(!TIFFGetField(t,TIFFTAG_XRESOLUTION,&off));clear_fault();
+ inject("vt_get",-1);assert(!TIFFFindCODEC(1)->init(t,1));clear_fault();inject("vt_scalar",-1);assert(!TIFFIsUpSampled(t));clear_fault();
+ assert(!TIFFGetField(t,TIFFTAG_SUBIFD,&off,&off));
  /* Like libtiff, a ColorMap needs exactly 1 << BitsPerSample entries per channel. */
  uint16_t *red=NULL,*green=NULL,*blue=NULL;
  TIFF*short_map=TIFFOpen("tests/fixtures/acceptance-deflate.tif","r");assert(short_map);assert(!TIFFGetField(short_map,TIFFTAG_COLORMAP,&red,&green,&blue));TIFFClose(short_map);
@@ -337,7 +325,7 @@ static void custom_and_print_test(void){
  for(int i=0;i<5;i++){struct vt_import_field bad=f;if(i==0)bad.name=NULL;if(i==1)bad.tag=65536;if(i>=2)bad.get_type=(int[]){0,51,14}[i-2];a.fields=&bad;assert(!TIFFReadCustomDirectory(t,8,(const TIFFFieldArray*)&a));}a.fields=&f;
  /* A failed import, or a failed read, registers none of the fields. */
  struct vt_import_field two[2]={f,f};two[1].name=NULL;a.fields=two;a.count=2;assert(!TIFFReadCustomDirectory(t,main_dir,(const TIFFFieldArray*)&a));a.fields=&f;a.count=1;
- assert(!TIFFReadCustomDirectory(t,(uint64_t)1<<40,(const TIFFFieldArray*)&a)&&t->directory_kind==0);
+ assert(!TIFFReadCustomDirectory(t,(uint64_t)1<<40,(const TIFFFieldArray*)&a)&&TIFFFieldWithName(t,"ImageWidth"));
  assert(TIFFReadCustomDirectory(t,main_dir,NULL)&&!TIFFFindField(t,62000,TIFF_ANY));assert(TIFFSetDirectory(t,0));
  TIFFFieldInfo other={62001,1,1,TIFF_SHORT,FIELD_CUSTOM,1,0,"Other"};assert(!TIFFMergeFieldInfo(t,&other,1));
  for(int i=0;i<4;i++){f.get_type=(int[]){4,18,30,42}[i];assert(TIFFReadCustomDirectory(t,main_dir,(const TIFFFieldArray*)&a));assert(TIFFFindField(t,62000,TIFF_ANY)&&!TIFFFindField(t,62001,TIFF_ANY));}assert(TIFFSetDirectory(t,0)&&TIFFFindField(t,62001,TIFF_ANY));TIFFClose(t);
@@ -351,7 +339,6 @@ static void custom_and_print_test(void){
 static void getter_defaults_test(void){
  TIFF*t=gray();float*p=NULL;double d=0;
  assert(TIFFGetFieldDefaulted(t,TIFFTAG_WHITEPOINT,&p));assert(TIFFGetFieldDefaulted(t,TIFFTAG_YCBCRCOEFFICIENTS,&p));assert(TIFFGetFieldDefaulted(t,TIFFTAG_REFERENCEBLACKWHITE,&p));assert(TIFFGetFieldDefaulted(t,TIFFTAG_STONITS,&d)&&d==1.);
- inject("vt_scalar",1);fault_tag=TIFFTAG_PHOTOMETRIC;fault_value=PHOTOMETRIC_YCBCR;assert(TIFFGetFieldDefaulted(t,TIFFTAG_REFERENCEBLACKWHITE,&p)&&p[2]==128.f);clear_fault();
  /* As in libtiff, the strip and tile tags of a pair read one array. */
  uint64_t*strip=NULL,*tile=NULL;assert(TIFFGetField(t,TIFFTAG_STRIPOFFSETS,&strip)&&TIFFGetField(t,TIFFTAG_TILEOFFSETS,&tile)&&strip==tile);
  assert(TIFFGetField(t,TIFFTAG_STRIPBYTECOUNTS,&strip)&&TIFFGetField(t,TIFFTAG_TILEBYTECOUNTS,&tile)&&strip==tile);
@@ -360,17 +347,19 @@ static void getter_defaults_test(void){
  inject("vt_commit",0);/* The real bridge may reject short input before the final copy. */
  (void)TIFFReadFromUserBuffer(t,0,bytes,2,out,2);clear_fault();
  TIFFClose(t);
+ t=TIFFOpen("tests/fixtures/jpeg-ycbcr.tif","rc");assert(t&&TIFFUnsetField(t,TIFFTAG_REFERENCEBLACKWHITE));assert(TIFFGetFieldDefaulted(t,TIFFTAG_REFERENCEBLACKWHITE,&p)&&p[2]==128.f);TIFFClose(t);
  t=TIFFOpen("tests/fixtures/alpha-4-1-none.tif","rc");assert(t);TIFFRGBAImage img;assert(TIFFRGBAImageBegin(&img,t,0,NULL)&&img.alpha);TIFFClose(t);
- t=gray();inject("vt_array",1);fault_tag=TIFFTAG_EXTRASAMPLES;fault_len=0;/* Explicit default count zero remains accepted. */
- uint16_t count,*extra;assert(TIFFGetFieldDefaulted(t,TIFFTAG_EXTRASAMPLES,&count,&extra)&&!count);clear_fault();TIFFClose(t);
+ t=gray();/* A default count of zero is accepted. */
+ uint16_t count,*extra;assert(TIFFGetFieldDefaulted(t,TIFFTAG_EXTRASAMPLES,&count,&extra)&&!count);TIFFClose(t);
  float luma[]={.5f,1e-20f,.5f},ref[]={0,255,128,255,128,255};size_t n=((sizeof(TIFFYCbCrToRGB)+sizeof(long)-1)/sizeof(long))*sizeof(long)+4*256+2*256*sizeof(int)+3*256*sizeof(int32_t);TIFFYCbCrToRGB*y=malloc(n);assert(y&&!TIFFYCbCrToRGBInit(y,luma,ref));free(y);
 }
+static int no_photometric(TIFF*t,uint32_t k,va_list a){return k==TIFFTAG_PHOTOMETRIC?0:default_getfield(t,k,a);}
 static int empty_extras(TIFF*t,uint32_t k,va_list a){if(k==TIFFTAG_EXTRASAMPLES){*va_arg(a,uint16_t*)=0;*va_arg(a,uint16_t**)=NULL;return 1;}return default_getfield(t,k,a);}
 static void final_branches_test(const char *planar){
  assert(!writemode(NULL));TIFF*t=gray();assert(TIFFFlush(t));assert(TIFFCheckTile(t,0,0,0,0)&&TIFFComputeTile(t,0,0,0,0)==0);uint8_t b[16384];assert(TIFFReadRawStrip(t,0,b,0)==0);
  float*p=NULL;assert(!TIFFGetFieldDefaulted(t,TIFFTAG_PRIMARYCHROMATICITIES,&p));
  TIFFRGBAImage img;t->methods.vgetfield=empty_extras;assert(TIFFRGBAImageBegin(&img,t,0,NULL)&&img.alpha==0);t->methods.vgetfield=default_getfield;
- inject("vt_scalar",0);fault_tag=TIFFTAG_PHOTOMETRIC;assert(TIFFRGBAImageBegin(&img,t,0,NULL)&&img.photometric==PHOTOMETRIC_MINISBLACK);clear_fault();
+ t->methods.vgetfield=no_photometric;assert(TIFFRGBAImageBegin(&img,t,0,NULL)&&img.photometric==PHOTOMETRIC_MINISBLACK);t->methods.vgetfield=default_getfield;
  tmsize_t size=TIFFRawStripSize(t,0);assert(size>0);uint8_t*encoded=malloc((size_t)size);assert(encoded);assert(TIFFReadRawStrip(t,0,encoded,size)==size);assert(TIFFReadFromUserBuffer(t,0,encoded,size,NULL,0));inject("vt_commit",0);b[0]=0xa5;assert(!TIFFReadFromUserBuffer(t,0,encoded,size,b,1)&&b[0]==0xa5);clear_fault();free(encoded);TIFFClose(t);
  t=TIFFOpen("tests/fixtures/jpeg-ycbcr.tif","rc");assert(t);assert(TIFFSetField(t,TIFFTAG_JPEGCOLORMODE,0)&&!TIFFIsUpSampled(t));assert(TIFFSetField(t,TIFFTAG_JPEGCOLORMODE,1)&&TIFFIsUpSampled(t));inject("vt_scalar",-1);fault_tag=TIFFTAG_JPEGCOLORMODE;assert(!TIFFIsUpSampled(t));clear_fault();TIFFClose(t);
  t=TIFFOpen("tests/fixtures/logluv-pages.tif","rc");assert(t);TIFFSetTagExtender(broken_extender);assert(!TIFFReadDirectory(t));TIFFSetTagExtender(NULL);TIFFClose(t);
