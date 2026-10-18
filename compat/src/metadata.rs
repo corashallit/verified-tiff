@@ -2,7 +2,7 @@
 use super::*;
 use verified_tiff::{native_samples::read_word,adapter_meta as checked};
 pub struct Converted{pub key:u32,kind:u16,n:usize,data:Buf<u64>}
-fn signed(v:u64,w:usize)->i64{match w{1=>v as i8 as i64,2=>v as i16 as i64,4=>v as i32 as i64,_=>v as i64}}
+pub fn signed(v:u64,w:usize)->i64{match w{1=>v as i8 as i64,2=>v as i16 as i64,4=>v as i32 as i64,_=>v as i64}}
 /// A real array element as libtiff's float (`single`) or double array reader
 /// converts it: a rational divides in that precision, its denominator is
 /// unsigned and a zero one reads as 0, and a double is clamped to the float
@@ -112,10 +112,6 @@ impl Handle{
         self.put(key,kind,count,&raw)
     }
 }
-#[no_mangle]
-pub unsafe extern "C" fn vt_typed(p:*mut c_void,key:u32,kind:u16,out:*mut *const u8,n:*mut usize)->i32{
-    guard(-1,||{if out.is_null()||n.is_null(){return Err((INVALID,"null typed output"));}match handle(p)?.typed(key,kind)?{Some((a,b))=>{*out=a;*n=b;Ok(1)},None=>Ok(0)}})
-}
 impl Handle{
     /// Read the directory at `off` as an EXIF, GPS or custom directory.
     pub fn custom_dir(&mut self,off:u64,kind:u32)->R<()>{
@@ -133,10 +129,6 @@ impl Handle{
 pub unsafe extern "C" fn vt_custom_dir(p:*mut c_void,off:u64,kind:u32)->i32{
     guard(0,||{handle(p)?.custom_dir(off,kind)?;Ok(1)})
 }
-#[no_mangle]
-pub unsafe extern "C" fn vt_mem_claim(p:*mut c_void,n:usize)->i32{guard(0,||{handle(p)?.source.mem.claim(n)?;Ok(1)})}
-#[no_mangle]
-pub unsafe extern "C" fn vt_mem_release(p:*mut c_void,n:usize){guard((),||{handle(p)?.source.mem.release(n);Ok(())});}
 impl Handle{
     /// Store `count` rationals of type `kind` from floats or doubles, as
     /// `host` gives, in native byte order.

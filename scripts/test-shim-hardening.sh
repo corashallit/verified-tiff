@@ -7,7 +7,7 @@ compiler="${CC:-cc}"
 extra=()
 if [ "${VTIFF_SANITIZE:-0}" = 1 ]; then extra=(-fsanitize=address,undefined,float-cast-overflow -fno-omit-frame-pointer -no-pie); fi
 wrap=()
-for name in vt_error_code vt_error_message vt_next vt_free_directory vt_rgba_ok vt_rgba_begin vt_select vt_set_offset vt_mem_claim vt_unset vt_clientdata vt_info vt_count_dirs vt_strips vt_size vt_get vt_typed vt_strile vt_custom_dir vt_find_field vt_field_named; do wrap+=("-Wl,--wrap=$name"); done
+for name in vt_error_code vt_error_message vt_next vt_free_directory vt_rgba_ok vt_rgba_begin vt_select vt_set_offset vt_unset vt_clientdata vt_info vt_count_dirs vt_strips vt_size vt_get vt_strile vt_custom_dir vt_find_field vt_field_named; do wrap+=("-Wl,--wrap=$name"); done
 "$compiler" -std=c11 -O2 -g -Wall -Wextra -Werror "${extra[@]}" -Icompat -Icompat/include compat/tests/shim_hardening.c target/release/libverified_tiff_capi.a "${wrap[@]}" -ldl -lpthread -lm -o "$output/shim-hardening"
 chmod u+x "$output/shim-hardening"
 python3 - "$output/hardening-planar.tif" <<'PYFIXTURE'

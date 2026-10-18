@@ -38,12 +38,8 @@ int vt_clientdata(void *,thandle_t);
 int vt_unset(void *,uint32_t);
 int vt_free_directory(void *);
 int vt_strile(void *,uint32_t,int,uint64_t *);
-uint32_t vt_tag(void *, size_t);
 void vt_close(void *);
-int vt_typed(void *, uint32_t, uint16_t, const uint8_t **, size_t *);
 int vt_custom_dir(void *, uint64_t, uint32_t);
-int vt_mem_claim(void *, size_t);
-void vt_mem_release(void *, size_t);
 int vt_error_code(void);
 const char *vt_error_message(void);
 int vt_select(void *, uint32_t);
@@ -108,6 +104,16 @@ struct vt_rgba {
 _Static_assert(sizeof(struct vt_rgba) == 48, "RGBA state layout");
 int vt_rgba_begin(void *, struct vt_rgba *);
 int vt_upsampled(void *);
+/* Client info, byte utilities and data widths (compat/src/utility.rs). */
+void *vt_client_info(void *, const char *);
+int vt_set_client_info(void *, void *, const char *);
+int vt_swab(void *, int64_t, size_t);
+int vt_reverse_bits(uint8_t *, int64_t);
+const unsigned char *vt_bit_table(int);
+int vt_data_width(int);
+/* Codec init (compat/src/get.rs) and the directory's text (print.rs). */
+int vt_codec_init(void *, uint16_t);
+const uint8_t *vt_print_directory(void *, int64_t, size_t *);
 /* The directory writer (compat/src/writer.rs). */
 int vt_write_check(void *, int);
 int vt_write_directory(void *);

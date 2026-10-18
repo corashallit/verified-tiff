@@ -447,3 +447,15 @@ pub unsafe extern "C" fn vt_get(p: *mut c_void, tag: u32, defaulted: i32, out: *
         }
     })
 }
+/// The init method of TIFFFindCODEC's codecs: whether the directory is
+/// compressed with `scheme`.
+#[no_mangle]
+pub unsafe extern "C" fn vt_codec_init(p: *mut c_void, scheme: u16) -> i32 {
+    guard(0, || {
+        let current = handle(p)?.scalar(tag::COMPRESSION.into(), true)?;
+        if current != Some(scheme.into()) {
+            return Err((INVALID, "codec does not match selected directory"));
+        }
+        Ok(1)
+    })
+}

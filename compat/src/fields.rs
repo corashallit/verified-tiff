@@ -185,6 +185,14 @@ impl Fields {
         }
         schemas(dir).iter().find(|s| s.name.to_bytes() == name).map(Found::Static)
     }
+    /// The name of the field of `tag`.
+    pub fn name(&self, dir: u32, tag: u32) -> Option<&CStr> {
+        Some(match self.locate(dir, tag)? {
+            // A registered field's view names the copy the entry owns.
+            Found::Registered(i) => unsafe { CStr::from_ptr(self.entries[i][0].view.name) },
+            Found::Static(s) => s.name,
+        })
+    }
     pub fn lookup(&self, dir: u32, tag: u32) -> Option<Shape> {
         match self.locate(dir, tag)? {
             Found::Registered(i) => Some(self.entries[i][0].shape),

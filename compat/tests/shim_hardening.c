@@ -38,10 +38,8 @@ static const char *fault;
 static uint32_t fault_tag;
 static int fault_rc;
 static uint64_t fault_value;
-static size_t fault_len;
-static union {long double align;uint8_t bytes[262144];} scratch;
 static int injecting(const char *name,uint32_t tag){return fault && !strcmp(fault,name) && (!fault_tag||fault_tag==tag);}
-static void inject(const char *name,int rc){fault=name;fault_tag=0;fault_rc=rc;fault_value=0;fault_len=0;}
+static void inject(const char *name,int rc){fault=name;fault_tag=0;fault_rc=rc;fault_value=0;}
 static void clear_fault(void){fault=NULL;alloc_fail=-1;alloc_calls=0;}
 int __real_vt_error_code(void);
 int __wrap_vt_error_code(void){return fault?EIO:__real_vt_error_code();}
@@ -50,7 +48,7 @@ const char *__wrap_vt_error_message(void){return fault?"injected bridge failure"
 #define WRAP_INT1(n) int __real_##n(void*); int __wrap_##n(void *p){return injecting(#n,0)?fault_rc:__real_##n(p);}
 #define WRAP_INT2(n,T) int __real_##n(void*,T); int __wrap_##n(void *p,T v){return injecting(#n,0)?fault_rc:__real_##n(p,v);}
 WRAP_INT1(vt_next) WRAP_INT1(vt_free_directory) WRAP_INT1(vt_rgba_ok)
-WRAP_INT2(vt_select,uint32_t) WRAP_INT2(vt_set_offset,uint64_t) WRAP_INT2(vt_mem_claim,size_t) WRAP_INT2(vt_unset,uint32_t) WRAP_INT2(vt_clientdata,thandle_t) WRAP_INT2(vt_rgba_begin,struct vt_rgba*)
+WRAP_INT2(vt_select,uint32_t) WRAP_INT2(vt_set_offset,uint64_t) WRAP_INT2(vt_unset,uint32_t) WRAP_INT2(vt_clientdata,thandle_t) WRAP_INT2(vt_rgba_begin,struct vt_rgba*)
 uint64_t __real_vt_info(void*,uint32_t);
 uint64_t __wrap_vt_info(void*p,uint32_t k){return injecting("vt_info",k)?fault_value:__real_vt_info(p,k);}
 int64_t __real_vt_strips(void*);
@@ -59,8 +57,6 @@ uint32_t __real_vt_count_dirs(void*);
 uint32_t __wrap_vt_count_dirs(void*p){return injecting("vt_count_dirs",0)?(uint32_t)fault_value:__real_vt_count_dirs(p);}
 int64_t __real_vt_size(void*,uint32_t,uint32_t);
 int64_t __wrap_vt_size(void*p,uint32_t k,uint32_t n){return injecting("vt_size",k)?(int64_t)fault_value:__real_vt_size(p,k,n);}
-int __real_vt_typed(void*,uint32_t,uint16_t,const uint8_t**,size_t*);
-int __wrap_vt_typed(void*p,uint32_t k,uint16_t t,const uint8_t**v,size_t*n){if(injecting("vt_typed",k)){*n=fault_len;*v=scratch.bytes;return fault_rc;}return __real_vt_typed(p,k,t,v,n);}
 int __real_vt_get(void*,uint32_t,int,struct vt_plan*);
 int __wrap_vt_get(void*p,uint32_t k,int d,struct vt_plan*o){return injecting("vt_get",k)?fault_rc:__real_vt_get(p,k,d,o);}
 int __real_vt_strile(void*,uint32_t,int,uint64_t*);
@@ -102,7 +98,7 @@ static void utilities_test(void){
  CHECK_SWAP(Short,uint16_t,2);CHECK_SWAP(Long,uint32_t,4);CHECK_SWAP(Long8,uint64_t,8);CHECK_SWAP(Float,float,4);CHECK_SWAP(Double,double,8);
  uint8_t triples[]={1,2,3,4,5,6};TIFFSwabArrayOfTriples(triples,2);assert(!memcmp(triples,"\3\2\1\6\5\4",6));
  TIFFReverseBits(NULL,0);TIFFReverseBits(NULL,1);TIFFReverseBits(a,-1);for(int i=0;i<256;i++){uint8_t v=(uint8_t)i,w=0;for(int j=0;j<8;j++)w|=((i>>j)&1)<<(7-j);TIFFReverseBits(&v,1);assert(v==w&&TIFFGetBitRevTable(1)[i]==w&&TIFFGetBitRevTable(0)[i]==i);}
- assert(!TIFFDataWidth(TIFF_NOTYPE)&&!TIFFIsCODECConfigured(65535));
+ static const int widths[]={0,1,1,2,4,8,1,1,2,4,8,4,8,4,0,0,8,8,8,0};for(int i=0;i<20;i++)assert(TIFFDataWidth((TIFFDataType)i)==widths[i]);assert(!TIFFDataWidth((TIFFDataType)-1)&&!TIFFIsCODECConfigured(65535)&&TIFFIsCODECConfigured(COMPRESSION_LZW));
 }
 static void null_test(void){
  uint8_t b[64]={0};uint32_t rgba_buf[16]={0};char message[1024];uint64_t u;uint16_t v;
@@ -263,7 +259,9 @@ static void fields_failures_test(void){
  assert(TIFFFieldWithTag(t,TIFFTAG_LERC_PARAMETERS));assert(TIFFGetTagListEntry(t,-1)==UINT32_MAX);assert(!TIFFSetFileName(t,NULL));assert(!call_default_set(NULL,1,0));
  TIFFTagMethods methods=t->methods;t->methods.vgetfield=NULL;assert(!TIFFGetField(t,256,&n32));t->methods.vsetfield=NULL;assert(!TIFFSetField(t,256,(uint32_t)1));t->methods=methods;
  assert(!TIFFSetField(t,65001,1));assert(!TIFFSetField(t,TIFFTAG_SOFTWARE,NULL));TIFFOpenOptions*small=TIFFOpenOptionsAlloc();assert(small&&VTIFFOpenOptionsSetLimits(small,1<<20,3,1<<20));TIFF*tight=TIFFOpenExt(gray_path,"rc",small);TIFFOpenOptionsFree(small);
- assert(tight&&TIFFSetField(tight,TIFFTAG_SOFTWARE,"ab")&&!TIFFSetField(tight,TIFFTAG_SOFTWARE,"abc"));TIFFClose(tight);
+ assert(tight&&TIFFSetField(tight,TIFFTAG_SOFTWARE,"ab")&&!TIFFSetField(tight,TIFFTAG_SOFTWARE,"abc"));
+ /* The directory's text is an output, within the output limit. */
+ FILE*sink=tmpfile();assert(sink);TIFFPrintDirectory(tight,sink,0);assert(ftell(sink)==0);fclose(sink);TIFFClose(tight);
  uint32_t pairs[]={TIFFTAG_PAGENUMBER,TIFFTAG_YCBCRSUBSAMPLING,TIFFTAG_HALFTONEHINTS,TIFFTAG_DOTRANGE};for(int i=0;i<4;i++)assert(TIFFSetField(t,pairs[i],1,1));
  for(int v=0;v<2;v++){TIFFFieldInfo arr={64010+(uint32_t)v,v?-3:-1,v?-3:-1,TIFF_SHORT,FIELD_CUSTOM,1,1,"Array"};assert(!TIFFMergeFieldInfo(t,&arr,1));uint16_t values[]={4,9};assert(v?TIFFSetField(t,arr.field_tag,(uint32_t)2,values):TIFFSetField(t,arr.field_tag,2,values));assert(v?TIFFGetField(t,arr.field_tag,&n32,&a):TIFFGetField(t,arr.field_tag,&n16,&a));assert(!TIFFGetField(t,arr.field_tag,NULL,&a));assert(v?!TIFFGetField(t,arr.field_tag,&n32,NULL):!TIFFGetField(t,arr.field_tag,&n16,NULL));assert(v?TIFFSetField(t,arr.field_tag,(uint32_t)0,NULL):TIFFSetField(t,arr.field_tag,0,NULL));}
  TIFFFieldInfo str={64012,1,1,TIFF_ASCII,FIELD_CUSTOM,1,0,"String"};assert(!TIFFMergeFieldInfo(t,&str,1));assert(TIFFSetField(t,str.field_tag,"a\1\177z"));
@@ -281,10 +279,9 @@ static void reader_misc_test(void){
  TIFF*t=gray();uint8_t bytes[64];uint32_t pixels[64];uint64_t off=0;char longname[4097];memset(longname,'a',4096);longname[4096]=0;
  assert(!TIFFGetClientInfo(t,NULL));TIFFSetClientInfo(t,NULL,NULL);TIFFSetClientInfo(t,NULL,longname);assert(!TIFFGetClientInfo(t,"missing"));
  TIFFSetClientInfo(t,(void*)1,"first");TIFFSetClientInfo(t,(void*)2,"second");TIFFSetClientInfo(t,(void*)3,"first");assert(TIFFGetClientInfo(t,"first")== (void*)3&&TIFFGetClientInfo(t,"second")==(void*)2&&!TIFFGetClientInfo(t,"missing"));
- inject("vt_mem_claim",0);TIFFSetClientInfo(t,NULL,"claim-failure");assert(!TIFFGetClientInfo(t,"claim-failure"));clear_fault();
- alloc_fail=0;alloc_calls=0;TIFFSetClientInfo(t,NULL,"allocation-failure");assert(!TIFFGetClientInfo(t,"allocation-failure"));clear_fault();alloc_fail=0;alloc_calls=0;assert(!TIFFGetConfiguredCODECs());clear_fault();
+ alloc_fail=0;alloc_calls=0;assert(!TIFFGetConfiguredCODECs());clear_fault();
  assert(!TIFFUnsetField(t,65534));TIFFPrintDirectory(t,NULL,0);
- inject("vt_get",-1);assert(!TIFFFindCODEC(1)->init(t,1));clear_fault();assert(!TIFFIsUpSampled(t));
+ assert(!TIFFIsUpSampled(t));
  assert(!TIFFGetField(t,TIFFTAG_SUBIFD,&off,&off));
  /* Like libtiff, a ColorMap needs exactly 1 << BitsPerSample entries per channel. */
  uint16_t *red=NULL,*green=NULL,*blue=NULL;
@@ -311,11 +308,10 @@ static void custom_and_print_test(void){
  assert(TIFFReadCustomDirectory(t,main_dir,NULL)&&!TIFFFindField(t,62000,TIFF_ANY));assert(TIFFSetDirectory(t,0));
  TIFFFieldInfo other={62001,1,1,TIFF_SHORT,FIELD_CUSTOM,1,0,"Other"};assert(!TIFFMergeFieldInfo(t,&other,1));
  for(int i=0;i<4;i++){f.get_type=(int[]){4,18,30,42}[i];assert(TIFFReadCustomDirectory(t,main_dir,(const TIFFFieldArray*)&a));assert(TIFFFindField(t,62000,TIFF_ANY)&&!TIFFFindField(t,62001,TIFF_ANY));}assert(TIFFSetDirectory(t,0)&&TIFFFindField(t,62001,TIFF_ANY));TIFFClose(t);
- t=gray();assert(TIFFSetField(t,TIFFTAG_SOFTWARE,"a\1\177z"));FILE*out=tmpfile();assert(out);t->methods.printdir=printer;TIFFPrintDirectory(t,out,0);assert(print_callbacks==1);inject("vt_typed",-1);TIFFPrintDirectory(t,out,0);clear_fault();
- inject("vt_mem_claim",0);/* An unknown tag cannot be registered under the failed claim. */
- TIFFFieldInfo fi={64000,1,1,TIFF_SHORT,FIELD_CUSTOM,1,0,"PrintScalar"};clear_fault();assert(!TIFFMergeFieldInfo(t,&fi,1));assert(TIFFSetField(t,64000,42));
- inject("vt_find_field",-1);TIFFPrintDirectory(t,out,0);clear_fault();assert(TIFFGetTagListCount(t)>=0);assert(TIFFGetTagListEntry(t,100)==UINT32_MAX);
- inject("vt_typed",1);fault_tag=TIFFTAG_SOFTWARE;fault_len=2;scratch.bytes[0]='a';scratch.bytes[1]='b';TIFFPrintDirectory(t,out,0);clear_fault();fclose(out);TIFFClose(t);
+ t=gray();assert(TIFFSetField(t,TIFFTAG_SOFTWARE,"a\1\177z"));FILE*out=tmpfile();assert(out);t->methods.printdir=printer;TIFFPrintDirectory(t,out,0);assert(print_callbacks==1);
+ TIFFFieldInfo fi={64000,1,1,TIFF_SHORT,FIELD_CUSTOM,1,0,"PrintScalar"};assert(!TIFFMergeFieldInfo(t,&fi,1));assert(TIFFSetField(t,64000,42));
+ TIFFPrintDirectory(t,out,0);inject("vt_find_field",-1);assert(!TIFFFindField(t,TIFFTAG_SOFTWARE,TIFF_ANY));clear_fault();assert(TIFFGetTagListCount(t)>=0);assert(TIFFGetTagListEntry(t,100)==UINT32_MAX);
+ fclose(out);TIFFClose(t);
  t=TIFFOpen(tile_path,"rc");assert(t);out=tmpfile();assert(out);TIFFPrintDirectory(t,out,TIFFPRINT_STRIPS);fclose(out);TIFFClose(t);
 }
 static void getter_defaults_test(void){

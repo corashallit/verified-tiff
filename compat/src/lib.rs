@@ -78,6 +78,8 @@ mod get;
 mod set;
 mod open;
 mod read;
+mod utility;
+mod print;
 use storage::{Buf,Mem,Memory,Source,Backend,ReadProc,SeekProc};
 use directory::*;
 use store::{Store,Values};
@@ -107,6 +109,7 @@ struct Handle{
     warn_unknown:bool,
     /// Whether a writer's directory is written as it now stands.
     directory_written:bool,
+    client_info:Buf<utility::ClientInfo>,
 }
 impl Handle{
     fn open(mut source:Source,options:&open::Options,flags:u32)->R<Self>{
@@ -118,11 +121,11 @@ impl Handle{
         let (work,warn_unknown)=(options.work,options.warn_unknown!=0);
         let chop=flags&CHOP!=0;let deferred=flags&DEFERRED!=0;
         let (data,meta)=if writing||flags&HEADER!=0{empty_metadata(&source.mem,header)?}else{metadata(&mut source,header,header.first_ifd,&limits,chop,deferred)?};
-        let converted=Buf::new(0,&source.mem)?;let data=Store::new(data,&source.mem)?;let fields=fields::Fields::new(&source.mem)?;
+        let converted=Buf::new(0,&source.mem)?;let data=Store::new(data,&source.mem)?;let fields=fields::Fields::new(&source.mem)?;let client_info=Buf::new(0,&source.mem)?;
         let mut chain=Buf::new(1,&source.mem)?;if meta.off!=0{chain.push(meta.off)?;}
         // Like libtiff, a header-only open has no current directory yet.
         let page=if !writing&&flags&HEADER!=0{u32::MAX}else{0};
-        Ok(Self{writing,warn_unknown,directory_written:false,converted,directory_kind:0,default_reference:[0.;6],position:[u32::MAX;3],fields,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
+        Ok(Self{writing,warn_unknown,directory_written:false,client_info,converted,directory_kind:0,default_reference:[0.;6],position:[u32::MAX;3],fields,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
     }
     fn set_offset(&mut self,off:u64,page:u32)->R<()>{
         let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop,self.deferred)?;
@@ -306,8 +309,6 @@ pub unsafe extern "C" fn vt_next(p:*mut c_void)->i32{
         h.chain.reserve((h.chain.len()+1).next_power_of_two())?;
         let page=if h.meta.off==0{0}else{h.page.saturating_add(1)};h.set_offset(off,page)?;h.chain_steps=steps;h.chain.push(off)?;Ok(1)})
 }
-#[no_mangle]
-pub unsafe extern "C" fn vt_tag(p:*mut c_void,index:usize)->u32{guard(u32::MAX,||{let h=handle(p)?;Ok(h.meta.tags.get(index).ok_or((INVALID,"tag index out of range"))?.key as u32)})}
 #[no_mangle]
 pub unsafe extern "C" fn vt_strile(p:*mut c_void,k:u32,counts:i32,out:*mut u64)->i32{
     guard(0,||{let h=handle(p)?;if out.is_null(){return Err((INVALID,"null strile output"));}
