@@ -43,9 +43,12 @@ int vt_custom_dir(void *, uint64_t, uint32_t);
 int vt_error_code(void);
 const char *vt_error_message(void);
 int vt_select(void *, uint32_t);
+/* What vt_info reports of the current directory. */
+enum { VT_INFO_DIRECTORY, VT_INFO_OFFSET, VT_INFO_NEXT, VT_INFO_TILED, VT_INFO_LITTLE_ENDIAN, VT_INFO_BIGTIFF, VT_INFO_SEGMENTS };
 uint64_t vt_info(void *, uint32_t);
 uint32_t vt_count_dirs(void *);
 int vt_set_offset(void *, uint64_t);
+enum { VT_SIZE_SCANLINE, VT_SIZE_STRIP, VT_SIZE_TILE_ROW, VT_SIZE_TILE, VT_SIZE_RASTER_SCANLINE };
 int64_t vt_size(void *, uint32_t, uint32_t);
 int vt_rgba_ok(void *);
 void vt_not_implemented(const char *);

@@ -387,22 +387,22 @@ static uint64_t info(TIFF *t, unsigned key) {
   }
   return v;
 }
-int TIFFIsTiled(TIFF *t) { return (int)info(t, 5); }
-int TIFFIsBigEndian(TIFF *t) { return valid(t, __func__) ? !info(t, 6) : 0; }
+int TIFFIsTiled(TIFF *t) { return (int)info(t, VT_INFO_TILED); }
+int TIFFIsBigEndian(TIFF *t) { return valid(t, __func__) ? !info(t, VT_INFO_LITTLE_ENDIAN) : 0; }
 int TIFFIsByteSwapped(TIFF *t) {
   return valid(t, __func__) ? (TIFFIsBigEndian(t) != HOST_BIGENDIAN) : 0;
 }
 int TIFFIsMSB2LSB(TIFF *t) { return valid(t, __func__) ? 1 : 0; }
-int TIFFIsBigTIFF(TIFF *t) { return (int)info(t, 14); }
+int TIFFIsBigTIFF(TIFF *t) { return (int)info(t, VT_INFO_BIGTIFF); }
 int TIFFIsUpSampled(TIFF *t) {
   return valid(t, __func__) && vt_upsampled(t->state);
 }
-tdir_t TIFFCurrentDirectory(TIFF *t) { return (tdir_t)info(t, 2); }
-uint64_t TIFFCurrentDirOffset(TIFF *t) { return info(t, 3); }
+tdir_t TIFFCurrentDirectory(TIFF *t) { return (tdir_t)info(t, VT_INFO_DIRECTORY); }
+uint64_t TIFFCurrentDirOffset(TIFF *t) { return info(t, VT_INFO_OFFSET); }
 uint32_t TIFFCurrentRow(TIFF *t) { return t ? vt_position(t->state, VT_ROW) : UINT32_MAX; }
 uint32_t TIFFCurrentStrip(TIFF *t) { return t ? vt_position(t->state, VT_STRIP) : UINT32_MAX; }
 uint32_t TIFFCurrentTile(TIFF *t) { return t ? vt_position(t->state, VT_TILE) : UINT32_MAX; }
-int TIFFLastDirectory(TIFF *t) { return valid(t, __func__) && info(t, 4) == 0; }
+int TIFFLastDirectory(TIFF *t) { return valid(t, __func__) && info(t, VT_INFO_NEXT) == 0; }
 tdir_t TIFFNumberOfDirectories(TIFF *t) {
   if (!valid(t, __func__))
     return 0;
@@ -565,23 +565,23 @@ static uint64_t size64(TIFF *t, unsigned kind, uint32_t rows) {
   }
   return (uint64_t)n;
 }
-uint64_t TIFFScanlineSize64(TIFF *t) { return size64(t, 0, 1); }
+uint64_t TIFFScanlineSize64(TIFF *t) { return size64(t, VT_SIZE_SCANLINE, 1); }
 tmsize_t TIFFScanlineSize(TIFF *t) { return (tmsize_t)TIFFScanlineSize64(t); }
-uint64_t TIFFRasterScanlineSize64(TIFF *t) { return size64(t, 4, 1); }
+uint64_t TIFFRasterScanlineSize64(TIFF *t) { return size64(t, VT_SIZE_RASTER_SCANLINE, 1); }
 tmsize_t TIFFRasterScanlineSize(TIFF *t) {
   return (tmsize_t)TIFFRasterScanlineSize64(t);
 }
-uint64_t TIFFStripSize64(TIFF *t) { return size64(t, 1, UINT32_MAX); }
+uint64_t TIFFStripSize64(TIFF *t) { return size64(t, VT_SIZE_STRIP, UINT32_MAX); }
 tmsize_t TIFFStripSize(TIFF *t) { return (tmsize_t)TIFFStripSize64(t); }
-uint64_t TIFFVStripSize64(TIFF *t, uint32_t n) { return size64(t, 1, n); }
+uint64_t TIFFVStripSize64(TIFF *t, uint32_t n) { return size64(t, VT_SIZE_STRIP, n); }
 tmsize_t TIFFVStripSize(TIFF *t, uint32_t n) {
   return (tmsize_t)TIFFVStripSize64(t, n);
 }
-uint64_t TIFFTileRowSize64(TIFF *t) { return size64(t, 2, 1); }
+uint64_t TIFFTileRowSize64(TIFF *t) { return size64(t, VT_SIZE_TILE_ROW, 1); }
 tmsize_t TIFFTileRowSize(TIFF *t) { return (tmsize_t)TIFFTileRowSize64(t); }
-uint64_t TIFFTileSize64(TIFF *t) { return size64(t, 3, UINT32_MAX); }
+uint64_t TIFFTileSize64(TIFF *t) { return size64(t, VT_SIZE_TILE, UINT32_MAX); }
 tmsize_t TIFFTileSize(TIFF *t) { return (tmsize_t)TIFFTileSize64(t); }
-uint64_t TIFFVTileSize64(TIFF *t, uint32_t n) { return size64(t, 3, n); }
+uint64_t TIFFVTileSize64(TIFF *t, uint32_t n) { return size64(t, VT_SIZE_TILE, n); }
 tmsize_t TIFFVTileSize(TIFF *t, uint32_t n) {
   return (tmsize_t)TIFFVTileSize64(t, n);
 }
@@ -595,7 +595,7 @@ uint32_t TIFFNumberOfStrips(TIFF *t) {
   }
   return (uint32_t)n;
 }
-uint32_t TIFFNumberOfTiles(TIFF *t) { return (uint32_t)info(t, 7); }
+uint32_t TIFFNumberOfTiles(TIFF *t) { return (uint32_t)info(t, VT_INFO_SEGMENTS); }
 static uint64_t strile(TIFF *t, uint32_t index, int counts, int *error) {
   if (error)
     *error = 1;

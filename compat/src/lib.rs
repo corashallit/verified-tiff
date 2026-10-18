@@ -132,7 +132,6 @@ impl Handle{
         let data=Store::new(data,&self.source.mem)?;
         self.converted=Buf::new(0,&self.source.mem)?;self.directory_kind=0;self.data=data;self.meta=meta;self.page=page;self.chain_steps=0;self.stream=None;self.cache=None;self.rendered=None;self.jpeg_rgb=false;self.logluv16=false;self.position=[u32::MAX;3];Ok(())
     }
-    fn source_channels(&self)->R<usize>{Ok(self.meta.ch)}
     /// JPEGCOLORMODE or SGILOGDATAFMT: decode YCbCr JPEG as RGB, or LogLuv
     /// as 16-bit integers.
     fn mode(&mut self,key:u32,v:i32)->R<()>{
@@ -208,29 +207,29 @@ pub unsafe extern "C" fn vt_select(p: *mut c_void, page: u32) -> i32 {
         Ok(1)
     })
 }
+/// What `vt_info` reports of the current directory, numbered as in bridge.h.
+mod info {
+    pub const DIRECTORY: u32 = 0;
+    pub const OFFSET: u32 = 1;
+    pub const NEXT: u32 = 2;
+    pub const TILED: u32 = 3;
+    pub const LITTLE_ENDIAN: u32 = 4;
+    pub const BIGTIFF: u32 = 5;
+    pub const SEGMENTS: u32 = 6;
+}
 #[no_mangle]
 pub unsafe extern "C" fn vt_info(p: *mut c_void, key: u32) -> u64 {
     guard(u64::MAX, || {
         let h = handle(p)?;
         let m = &h.meta;
         Ok(match key {
-            0 => m.width as u64,
-            1 => m.height as u64,
-            2 => h.page as u64,
-            3 => m.off as u64,
-            4 => m.next as u64,
-            5 => m.tiled as u64,
-            6 => m.le as u64,
-            7 => m.offsets.len() as u64,
-            8 => m.bw as u64,
-            9 => m.bh as u64,
-            10 => m.rows as u64,
-            11 => m.planar as u64,
-            12 => h.source_channels()? as u64,
-            13 => h.limits.max_output as u64,
-            14 => h.header.big as u64,
-            15 => h.meta.tags.len() as u64,
-            16 => m.photo,
+            info::DIRECTORY => h.page.into(),
+            info::OFFSET => m.off,
+            info::NEXT => m.next,
+            info::TILED => m.tiled.into(),
+            info::LITTLE_ENDIAN => m.le.into(),
+            info::BIGTIFF => h.header.big.into(),
+            info::SEGMENTS => m.offsets.len() as u64,
             _ => return Err((INVALID, "unknown adapter info")),
         })
     })
@@ -256,40 +255,39 @@ pub unsafe extern "C" fn vt_set_offset(p: *mut c_void, offset: u64) -> i32 {
         Ok(1)
     })
 }
+/// The sizes of `vt_size`, numbered as in bridge.h.
+mod size {
+    pub const SCANLINE: u32 = 0;
+    pub const STRIP: u32 = 1;
+    pub const TILE_ROW: u32 = 2;
+    pub const TILE: u32 = 3;
+    pub const RASTER_SCANLINE: u32 = 4;
+}
+/// The bytes of a scanline, a strip or tile of `rows` rows (all of them for
+/// u32::MAX), a tile row, or a scanline of every plane.
 #[no_mangle]
 pub unsafe extern "C" fn vt_size(p: *mut c_void, kind: u32, rows: u32) -> i64 {
     guard(-1, || {
         let h = handle(p)?;
         let m = &h.meta;
         if h.meta.width==0 {return Err((INVALID,"no selected image directory"));}
-        if kind > 4 {
-            return Err((INVALID, "invalid size operation"));
-        }
         // Like libtiff, a strip image's tiles are its strips: image width by
         // RowsPerStrip rows.
-        let w = if kind == 2 || kind == 3 {
-            m.bw
-        } else {
-            m.width
-        };
-        let n = if kind == 0 || kind == 2 || kind == 4 {
-            1
-        } else if rows == u32::MAX {
+        let w = if matches!(kind, size::TILE_ROW | size::TILE) { m.bw } else { m.width };
+        let n = if rows == u32::MAX {
             // Like libtiff, a tiled image's strip spans RowsPerStrip rows.
-            if kind == 1 && m.tiled { m.rows.min(m.height) } else if kind == 3 && !m.tiled { m.tile_rows } else { m.bh }
+            if kind == size::STRIP && m.tiled { m.rows.min(m.height) } else if kind == size::TILE && !m.tiled { m.tile_rows } else { m.bh }
         } else {
             rows as usize
         };
-        let size=match kind{
-            1|3=>if n==0{0}else{let (row,rows)=h.native_layout(w,n)?;product(row,rows)?},
-            2=>h.sample_row(w)?,
-            4=>product(h.sample_row(w)?,if m.planar==2{m.ch}else{1})?,
-            _=>h.raw_row(w)?,
+        let bytes = match kind {
+            size::SCANLINE => h.raw_row(w)?,
+            size::STRIP | size::TILE => if n == 0 { 0 } else { let (row, rows) = h.native_layout(w, n)?; product(row, rows)? },
+            size::TILE_ROW => h.sample_row(w)?,
+            size::RASTER_SCANLINE => product(h.sample_row(w)?, if m.planar == 2 { m.ch } else { 1 })?,
+            _ => return Err((INVALID, "invalid size operation")),
         };
-        if size > i64::MAX as usize {
-            return Err((LIMIT, "size overflow"));
-        }
-        Ok(size as i64)
+        i64::try_from(bytes).map_err(|_| (LIMIT, "size overflow"))
     })
 }
 #[no_mangle]
