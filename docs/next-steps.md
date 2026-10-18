@@ -79,7 +79,8 @@ acceptance proofs. Preserve the missing-EOL and duplicate-endpoint policies in
    libtiff's OJPEG codec also rewrites YCbCrSubsampling and
    JPEGInterchangeFormat from the stream and assumes YCbCr for a missing or
    RGB photometric; the shim reads the tags as stored. Predictor reads back on
-   uncompressed images. Default limits (256 MiB RGBA staging, 1024 directories,
+   uncompressed images. RGBA setup reads the stored fields, where libtiff goes
+   through get hooks installed with `TIFFAccessTagMethods`. Default limits (256 MiB RGBA staging, 1024 directories,
    64 samples per pixel) reject large files libtiff opens. RGBA conversion of
    separate YCbCr planes and of palette images with extra samples is
    unsupported where libtiff draws them. libtiff 4.7.1 is not a reference for
@@ -107,8 +108,8 @@ The partial reader-oriented C API is implemented; see `c-api.md` and
 metadata-only temporary writer are now available. Future adapter work includes
 deferred strile-array loading and broader codec subsets. Exact indices/associated samples/tile padding, independent
 segments, BigTIFF, SubIFDs and broader native widths are now implemented through
-new verified primitives; see `native-compatibility.md`. Broader ABI support and formal verification of the
-FFI/metadata/output adapter remain separate tasks. Keep current ENOSYS failures
+new verified primitives; see `native-compatibility.md`. Broader ABI support remains a separate task, as does a
+proof of directory normalisation, which only the libtiff differential checks. Keep current ENOSYS failures
 explicit until their actual contracts are implemented and checked.
 
 

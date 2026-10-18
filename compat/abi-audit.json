@@ -1,0 +1,13 @@
+{
+  "reason": "Cora approved on 2026-10-17 moving the C shim's TIFF logic into compat/src. The reviewed C keeps varargs unpacking, caller callbacks, public structs, libc calls and libtiff's licensed color math, and names no TIFF tag.",
+  "files": {
+    "compat/bridge.h": "1e14bd62dcee6341c5c33ef3bfe5b82791dd085ad11a4de66d17a5a7f83e2a35",
+    "compat/color_api.inc": "7f41965740d76a8b58bcb9a5438d0faa962882a32a843c64ed54cbab874d2dc0",
+    "compat/fields.inc": "66826f26cf8f95db9b6fc05f1f6f8b2bbdea78778ae03470c98380c92f4464fc",
+    "compat/logluv_api.inc": "52816f8eb517236bedcade02ef9b09237ce574aef7fee05bc7c6564ce25a05ce",
+    "compat/reader_api.inc": "08a971f2f0dd8693976856b7a0bcd19f2108be9e467262205c479b576a28ceb6",
+    "compat/tiff_compat.c": "da5292d1f744b535deb5c97c78f4238dc7c2aa5104969eec0abc5ee90fc6c3fd",
+    "compat/uv_table.inc": "b3a324afe7de5407b5d3a64d053c2ffdffc3f60a6a90c6f7911568d096a78373",
+    "compat/writer.inc": "f9ef8d25eede4f1f62ea8db95f0bc9c3b01f572f5bc9f48d286b71c2a84d8a51"
+  }
+}

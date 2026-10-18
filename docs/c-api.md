@@ -185,6 +185,42 @@ file-number and mode setters return their prior values. Public Lab/YCbCr and
 LogL/LogLuv decoding helpers are available. See [reader additions](reader-features.md)
 for ownership, private field-array ABI, streaming limits and exact proof scope.
 
+## The C ABI edge
+
+The C in `compat/` is a thin edge over the Rust adapter in `compat/src`. It
+keeps what has to be C: unpacking varargs with each argument's C type, calling
+the caller's I/O, error, tag-extender and print callbacks, filling public
+structs such as `TIFFRGBAImage` and the `TIFFCodec` table, calling libc (`open`,
+`getenv`, `fprintf`), and libtiff's licensed color math. Rust makes every
+decision about the file: field schemas, the getter and setter plan for each tag,
+defaults, strip and tile numbering, sizes, open options and mode strings, read
+extents and the directory text. The C names no TIFF tag.
+
+`compat/abi-audit.json` records the SHA-256 of each C source. `scripts/audit.py`,
+which `scripts/verify.sh` runs, fails when a C source changes without a ledger
+update, when a source is added or removed, or when one names a TIFF tag. Review
+the C before updating the ledger, as for `trusted-float` and `trusted-simd`.
+
+Verus checks the decisions at the edge, each with negative gates: the C type
+and length behind every pointer `TIFFGetField` hands out, the bytes
+`TIFFSetField` reads from caller arrays, strip and tile index arithmetic, option
+and mode parsing, and the extent of each read into a caller buffer. See
+[adapter proofs](adapter-proofs.md). Directory normalisation is ordinary safe
+Rust, compared with libtiff by the `capi_diff` fuzz target.
+
+This layout differs from libtiff in a few places:
+
+* RGBA setup and reads use the stored fields, so get hooks installed with
+  `TIFFAccessTagMethods` do not change what they see. libtiff reads those
+  fields through the hooks.
+* `TIFFField` records are views of the Rust registry. Writing through a cast
+  pointer changes neither getters nor setters.
+* `TIFFSetField` rejects a null string or ColorMap pointer. libtiff crashes on
+  the string and clears the ColorMap.
+* A passed count above 65535 for a field with a 16-bit count is rejected,
+  since its getter could not report it. libtiff keeps the count and truncates
+  it on read.
+
 ## Failures and trust
 
 Unsupported APIs report `errno = ENOSYS`, update `VTIFFLastErrorCode`/`VTIFFLastError`,
@@ -200,7 +236,8 @@ handle requires exclusive access and cannot be closed or reentered during its
 callbacks. Separate handles work on separate threads. Callbacks are trusted
 caller code and must honor declared buffer and return-value contracts.
 
-The C shim, Rust FFI adapter, seekable metadata assembly, synthetic container
+Apart from the checked decisions in [adapter proofs](adapter-proofs.md), the C
+ABI edge, Rust FFI adapter, seekable metadata assembly, synthetic container
 adaptation, allocator accounting and RGBA presentation are **not formally
 verified**. The core verifies local records, streams and sample transforms;
 there is no end-to-end theorem for the new BigTIFF/C pipeline. The old complete

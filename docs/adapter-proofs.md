@@ -1,6 +1,6 @@
 # Adapter proof extension
 
-This pass moves security-relevant adapter decisions into five executable Verus
+This pass moves security-relevant adapter decisions into six executable Verus
 modules. They are called by the actual C-compatible reader; they are not a
 standalone model or a collection of assumed contracts. No new project axioms,
 trusted FP operations, SIMD operations or native decoder dependencies are added.
@@ -10,11 +10,12 @@ The existing C ABI is retained.
 
 | Module | Checked contract | Production call sites |
 | --- | --- | --- |
-| `adapter_meta` | Exact accepted getter shapes from a registered schema; count-width limits; registration count-convention consistency; exact integer conversion or rejection; source metadata payload bounds; exact ColorMap/TransferFunction lengths for their bit depth, with every channel pointer inside the stored array | `compat/fields.inc` through stateless bridges; `compat/src/metadata.rs` and `directory.rs` |
+| `adapter_meta` | Exact accepted getter shapes from a registered schema; count-width limits; registration count-convention consistency; exact integer conversion or rejection; source metadata payload bounds; exact ColorMap/TransferFunction lengths for their bit depth, with every channel pointer inside the stored array; the C type of each getter output and setter argument; the count and bytes a setter reads from a caller array | `compat/src/fields.rs`, `get.rs`, `set.rs`, `store.rs`, `metadata.rs` and `directory.rs`, behind TIFFGetField, TIFFSetField and field registration |
 | `adapter_geometry` | Positive strip/tile grids, exact plane/segment indexes and sufficient-input acceptance; orientation aliases; exact mirrored crop spans contained in the destination raster; libtiff's 32-bit wrapping strip and tile numbers, implied strip counts, tile coordinate checks and the first row of each strip or tile | Directory geometry assembly; native and CMYK/Lab/YCbCr RGBA placement; `compat/src/index.rs` behind TIFFComputeStrip/Tile, TIFFCheckTile, TIFFNumberOfStrips and the current row, strip and tile |
 | `adapter_window` | Exact unread-suffix preservation and unchanged suffix frame; refill source-position conservation; available-bit arithmetic | The production PackBits/LZW/Deflate input-window refill and LZW end checks |
-| `adapter_bounds` | Exact allocation admission and release transitions, signed-addressable allocation sizes, source offsets, predictor-row rounding, bounded directory steps; failure-atomic initialized copies and initialization of C output buffers | Adapter buffer allocation/accounting, source I/O, streamed range reads, directory advancement, and final native/RGBA/user-buffer commits |
+| `adapter_bounds` | Exact allocation admission and release transitions, signed-addressable allocation sizes, source offsets, predictor-row rounding, bounded directory steps; failure-atomic initialized copies and initialization of C output buffers; the bytes a read copies into a caller buffer and the frame of an RGBA raster | Adapter buffer allocation/accounting, source I/O, streamed range reads, directory advancement, and final native/RGBA/user-buffer commits in `compat/src/read.rs` |
 | `adapter_color` | Bounded IEEE binary32-to-index conversion including NaN, infinities and negative values; exact CMYK integer pixels; overflow-free wide YCbCr table combination and clipping | Rust Lab/CMYK rendering and public C Lab/YCbCr helpers |
+| `adapter_options` | Exact decimal limits from `VTIFF_MAX_*` variables, with malformed or overflowing text rejected; the accepted letters of a mode string and the open flags they set | `compat/src/open.rs` behind TIFFOpen and the open options |
 
 The binary32 model specifies saturated nonnegative truncation directly from
 IEEE sign/exponent/fraction bits. The implementation never casts an arbitrary
@@ -38,6 +39,10 @@ against real-number colorimetry.
   layout accepts exactly the lengths libtiff reads and places every channel
   inside the stored array; a defaulted TransferFunction is libtiff's default
   curve, kept like a stored value.
+* TIFFGetField and TIFFSetField follow a Rust plan for each tag. The plan
+  gives the C type of every output and argument from the field's checked host
+  type, and a setter reads exactly the checked count and bytes from a caller
+  array: a fixed count, or a passed one within the field's count width.
 * All signed and unsigned integer metadata narrowing runs through the checked
   value-preservation function. Metadata payloads are bounded before iteration.
 * Allocation claims and releases use checked transitions inside atomic update
