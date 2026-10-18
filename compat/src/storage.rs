@@ -58,7 +58,8 @@ impl<T> DerefMut for Buf<T>{fn deref_mut(&mut self)->&mut[T]{&mut self.v}}
 impl<T> Drop for Buf<T>{fn drop(&mut self){self.mem.release(self.charge);}}
 pub type ReadProc=unsafe extern "C" fn(*mut c_void,*mut c_void,isize)->isize;
 pub type SeekProc=unsafe extern "C" fn(*mut c_void,u64,i32)->u64;
-pub enum Backend{Fd(i32),Client{client:*mut c_void,read:ReadProc,seek:SeekProc}}
+/// A file descriptor, or the caller's callbacks; only a writer writes.
+pub enum Backend{Fd(i32),Client{client:*mut c_void,read:ReadProc,write:Option<ReadProc>,seek:SeekProc}}
 pub enum ReadBuffer{Owned(Buf<u8>),Borrowed(*mut u8,usize)}
 pub struct Source{pub read_buffer:Option<ReadBuffer>,pub backend:Backend,pub len:u64,pub mem:Mem,pub input:usize}
 impl Source{
@@ -89,7 +90,7 @@ impl Source{
                 let file=std::mem::ManuallyDrop::new(unsafe{std::fs::File::from_raw_fd(*fd)});
                 file.read_exact_at(out,off).map_err(|_|(5,"input read failed"))?;
             }
-            Backend::Client{client,read,seek}=>unsafe{
+            Backend::Client{client,read,seek,..}=>unsafe{
                 if seek(*client,off,0)!=off{return Err((5,"callback seek failed"));}
                 let mut at=0;
                 while at<out.len(){

@@ -30,6 +30,8 @@ changes={
  'color':('adapter_color','f32_index','if v>cap as u64{cap}else{v as u32}','if v>cap as u64{0}else{v as u32}'),
  'row':('adapter_bounds','row_range','let first=start-start%row;','let first=0usize;'),
  'source':('adapter_bounds','source_offset','Ok(at)','Ok(base)'),
+ 'read-extent':('adapter_bounds','read_extent','Some(w)=>(if len<=w {len} else {w},w)','Some(w)=>(len,w)'),
+ 'raster-frame':('adapter_bounds','raster_frame','let at=below*4;','let at=below*3;'),
 }
 for name,(module,function,before,after) in changes.items():
  dest=root/'target'/('reject-adapter-'+name);shutil.copytree(root/'src',dest,dirs_exist_ok=True)

@@ -48,7 +48,39 @@ impl Handle{
         self.rendered=Some(out);Ok(())
     }
 }
+/// libtiff's write callbacks are passed at most this many bytes at once.
+const CHUNK:usize=1<<16;
+const SEEK_SET:i32=0;
+impl Handle{
+    /// Writes the directory over the client's output from its start.
+    fn write_directory(&mut self)->R<()>{
+        let Backend::Client{client,write:Some(write),seek,..}=self.source.backend else{return Err((NOTIMPL,"not implemented by verified-tiff"));};
+        if !self.writing{return Err((NOTIMPL,"not implemented by verified-tiff"));}
+        self.directory_bytes()?;
+        let mut bytes=self.rendered.take().ok_or((IO,"missing directory bytes"))?;
+        // Safety: the callbacks are the caller's, with the client they gave.
+        if unsafe{seek(client,0,SEEK_SET)}!=0{return Err((IO,"temporary directory seek failed"));}
+        let mut at=0;
+        while at<bytes.len(){
+            let want=(bytes.len()-at).min(CHUNK);
+            let got=unsafe{write(client,bytes.as_mut_ptr().add(at).cast(),want as isize)};
+            if got<=0||got as usize>want{return Err((IO,"temporary directory write failed"));}
+            at+=got as usize;
+        }
+        self.directory_written=true;Ok(())
+    }
+}
+/// TIFFWriteCheck: whether the directory can be written with strips, or
+/// with `tiles`.
 #[no_mangle]
-pub unsafe extern "C" fn vt_write_check(p:*mut c_void)->i32{guard(0,||{handle(p)?.write_check()?;Ok(1)})}
+pub unsafe extern "C" fn vt_write_check(p:*mut c_void,tiles:i32)->i32{
+    guard(0,||{let h=handle(p)?;h.write_check()?;if (tiles!=0)!=h.meta.tiled{return Err((INVALID,"strip/tile layout mismatch"));}Ok(1)})
+}
 #[no_mangle]
-pub unsafe extern "C" fn vt_directory_bytes(p:*mut c_void,n:*mut usize)->*const u8{guard(ptr::null(),||{if n.is_null(){return Err((INVALID,"null directory output"));}let h=handle(p)?;h.directory_bytes()?;let b=h.rendered.as_ref().unwrap();*n=b.len();Ok(b.as_ptr())})}
+pub unsafe extern "C" fn vt_write_directory(p:*mut c_void)->i32{guard(0,||{handle(p)?.write_directory()?;Ok(1)})}
+/// TIFFFlush and TIFFClose: a writer writes its directory unless it is
+/// already written.
+#[no_mangle]
+pub unsafe extern "C" fn vt_flush(p:*mut c_void)->i32{
+    guard(0,||{let h=handle(p)?;if h.writing&&!h.directory_written{h.write_directory()?;}Ok(1)})
+}

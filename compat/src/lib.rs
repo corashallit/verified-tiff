@@ -15,6 +15,7 @@ const INVALID: i32 = 22;
 const NOTIMPL: i32 = 38;
 const LIMIT: i32 = 27;
 const NOMEM: i32 = 12;
+const IO: i32 = 5;
 fn err(e: Error) -> (i32, &'static str) {
     match e {
         Error::Unsupported => (NOTIMPL, "TIFF format not implemented by verified-tiff"),
@@ -76,6 +77,7 @@ mod schema;
 mod get;
 mod set;
 mod open;
+mod read;
 use storage::{Buf,Mem,Memory,Source,Backend,ReadProc,SeekProc};
 use directory::*;
 use store::{Store,Values};
@@ -103,6 +105,8 @@ struct Handle{
     default_reference:[f32;6],
     /// Whether directory reads warn of tags no field describes.
     warn_unknown:bool,
+    /// Whether a writer's directory is written as it now stands.
+    directory_written:bool,
 }
 impl Handle{
     fn open(mut source:Source,options:&open::Options,flags:u32)->R<Self>{
@@ -118,7 +122,7 @@ impl Handle{
         let mut chain=Buf::new(1,&source.mem)?;if meta.off!=0{chain.push(meta.off)?;}
         // Like libtiff, a header-only open has no current directory yet.
         let page=if !writing&&flags&HEADER!=0{u32::MAX}else{0};
-        Ok(Self{writing,warn_unknown,converted,directory_kind:0,default_reference:[0.;6],position:[u32::MAX;3],fields,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
+        Ok(Self{writing,warn_unknown,directory_written:false,converted,directory_kind:0,default_reference:[0.;6],position:[u32::MAX;3],fields,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
     }
     fn set_offset(&mut self,off:u64,page:u32)->R<()>{
         let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop,self.deferred)?;
@@ -174,11 +178,11 @@ pub unsafe extern "C" fn vt_open_fd(fd:i32,options:*const open::Options,base:usi
     })
 }
 #[no_mangle]
-pub unsafe extern "C" fn vt_open_client(client:*mut c_void,read:ReadProc,seek:SeekProc,len:u64,options:*const open::Options,base:usize,flags:u32)->*mut c_void{
+pub unsafe extern "C" fn vt_open_client(client:*mut c_void,read:ReadProc,write:Option<ReadProc>,seek:SeekProc,len:u64,options:*const open::Options,base:usize,flags:u32)->*mut c_void{
     guard(ptr::null_mut(),||{
         let o=options.as_ref().ok_or((INVALID,"null options"))?;
         let mem=Memory::new(o.single,o.cumulative,base.checked_add(std::mem::size_of::<Handle>()).ok_or((LIMIT,"handle size overflow"))?)?;
-        let source=Source{read_buffer:None,backend:Backend::Client{client,read,seek},len,mem,input:o.input};
+        let source=Source{read_buffer:None,backend:Backend::Client{client,read,write,seek},len,mem,input:o.input};
         Ok(Box::into_raw(Box::new(Handle::open(source,o,flags)?)).cast())
     })
 }
@@ -293,17 +297,6 @@ pub unsafe extern "C" fn vt_rgba_ok(p: *mut c_void) -> i32 {
         Ok(1)
     })
 }
-// Output lives until the next mutating operation. C copies only after success.
-#[no_mangle]
-pub unsafe extern "C" fn vt_read(p:*mut c_void,kind:u32,a:u32,b:u32,c:u32,d:u32,len:*mut usize)->*const u8{
-    guard(ptr::null(),||{
-        let h=handle(p)?;if len.is_null(){return Err((INVALID,"null length output"));}
-        if h.meta.width==0{return Err((INVALID,"no selected image directory"));}
-        h.read(kind,a as usize,b as usize,c as usize,d as usize,usize::MAX)?;
-        let result=h.rendered.as_ref().ok_or((5,"missing output"))?;
-        *len=result.len();Ok(result.as_ptr())
-    })
-}
 #[no_mangle]
 pub unsafe extern "C" fn vt_next(p:*mut c_void)->i32{
     guard(0,||{let h=handle(p)?;let off=h.meta.next;if off==0{return Ok(0);}
@@ -316,40 +309,11 @@ pub unsafe extern "C" fn vt_next(p:*mut c_void)->i32{
 #[no_mangle]
 pub unsafe extern "C" fn vt_tag(p:*mut c_void,index:usize)->u32{guard(u32::MAX,||{let h=handle(p)?;Ok(h.meta.tags.get(index).ok_or((INVALID,"tag index out of range"))?.key as u32)})}
 #[no_mangle]
-pub unsafe extern "C" fn vt_region(p:*mut c_void,x:u32,y:u32,w:u32,ht:u32,source:u32,orientation:u32,len:*mut usize)->*const u8{
-    guard(ptr::null(),||{let h=handle(p)?;if len.is_null(){return Err((INVALID,"null length"));}if x as usize>=h.meta.width||y as usize>=h.meta.height||w as usize>h.meta.width-x as usize||ht as usize>h.meta.height-y as usize{return Err((INVALID,"RGBA region outside image"));}
-        // libtiff applies no flip for a source orientation it does not know.
-        let source=if (1..=8).contains(&source){source}else{orientation};
-        h.rgba_from(x as usize,y as usize,w as usize,ht as usize,source as usize,orientation as usize)?;let b=h.rendered.as_ref().ok_or((5,"missing RGBA output"))?;*len=b.len();Ok(b.as_ptr())})
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn vt_user_buffer(p:*mut c_void,k:u32,input:*const u8,n:usize,wanted:usize)->*const u8{
-    guard(ptr::null(),||{
-        let h=handle(p)?;h.native_ok()?;
-        if n>isize::MAX as usize||n>h.limits.max_input||wanted>h.limits.max_output{return Err((LIMIT,"user buffer limit"));}
-        if input.is_null()&&n!=0{return Err((INVALID,"null user input"));}
-        let mut encoded=Buf::new(n,&h.source.mem)?;
-        if n!=0{encoded.extend(std::slice::from_raw_parts(input,n))?;}
-        let mut budget=Budget{remaining:h.work};
-        let decoded=h.decode_segment(k as usize,encoded,&mut budget)?;
-        if wanted>decoded.len(){return Err((INVALID,"user output exceeds decoded segment"));}
-        h.rendered=Some(decoded);Ok(h.rendered.as_ref().unwrap().as_ptr())
-    })
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn vt_strile(p:*mut c_void,k:u32,counts:i32,out:*mut u64)->i32{
     guard(0,||{let h=handle(p)?;if out.is_null(){return Err((INVALID,"null strile output"));}
         *out=if counts!=0{h.meta.counts.get(&mut h.source,k as usize)?}else{h.meta.offsets.get(&mut h.source,k as usize)?};Ok(1)})
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn vt_read_buffer(p:*mut c_void,buffer:*mut u8,n:usize)->i32{
-    guard(0,||{let h=handle(p)?;if n==0||n>isize::MAX as usize{return Err((INVALID,"invalid read buffer size"));}
-        let b=if buffer.is_null(){storage::ReadBuffer::Owned(Buf::zeros(n,h.limits.max_input,&h.source.mem)?)}else{storage::ReadBuffer::Borrowed(buffer,n)};
-        h.source.read_buffer=Some(b);h.stream=None;h.cache=None;Ok(1)})
-}
 #[no_mangle]
 pub unsafe extern "C" fn vt_unset(p:*mut c_void,key:u32)->i32{
     guard(0,||{let h=handle(p)?;
@@ -367,35 +331,7 @@ pub unsafe extern "C" fn vt_free_directory(p:*mut c_void)->i32{
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vt_read_size(p:*mut c_void,kind:u32,a:u32,b:u32,wanted:usize,len:*mut usize)->*const u8{
-    guard(ptr::null(),||{let h=handle(p)?;if len.is_null(){return Err((INVALID,"null length"));}
-        if h.meta.width==0{return Err((INVALID,"no selected image directory"));}
-        h.read(kind,a as usize,b as usize,0,0,wanted)?;
-        let out=h.rendered.as_ref().ok_or((5,"missing read output"))?;*len=out.len();Ok(out.as_ptr())})
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn vt_clientdata(p:*mut c_void,client:*mut c_void)->i32{
     guard(0,||{let h=handle(p)?;if let Backend::Client{client:current,..}=&mut h.source.backend{*current=client;}
         h.stream=None;h.cache=None;h.rendered=None;Ok(1)})
-}
-
-/// Caller owns a writable destination of `capacity` bytes and a
-/// readable source of `n` bytes. The bridge rejects overlap before creating
-/// references. The checked core proves the exact copy and unchanged frame.
-#[no_mangle]
-pub unsafe extern "C" fn vt_commit(dst:*mut u8,capacity:usize,at:usize,src:*const u8,n:usize)->i32{
-    guard(0,||{
-        if capacity>isize::MAX as usize||n>isize::MAX as usize||!verified_tiff::checked_range(capacity,at,n){return Err((LIMIT,"output commit extent"));}
-        if n==0{return Ok(1);}
-        if dst.is_null()||src.is_null(){return Err((INVALID,"null output commit"));}
-        let de=(dst as usize).checked_add(capacity).ok_or((INVALID,"destination address wrap"))?;
-        let se=(src as usize).checked_add(n).ok_or((INVALID,"source address wrap"))?;
-        if (dst as usize)<se&&(src as usize)<de{return Err((INVALID,"overlapping output commit"));}
-        // MaybeUninit permits C's ordinary uninitialized malloc buffers. The
-        // checked loop writes every byte before it can be treated as initialized.
-        let output=std::slice::from_raw_parts_mut(dst.add(at).cast::<std::mem::MaybeUninit<u8>>(),n);
-        let input=std::slice::from_raw_parts(src,n);
-        verified_tiff::adapter_bounds::commit_uninit(input,output).map_err(err)?;Ok(1)
-    })
 }

@@ -6,6 +6,16 @@ use super::*;
 use verified_tiff::adapter_geometry as geometry;
 use verified_tiff::{native,native_samples as ns};
 
+/// The reads of the C API: a scanline, an encoded or raw strip or tile, or
+/// an RGBA raster of the image, a strip or a tile.
+pub enum Read{
+    Scanline{row:usize,sample:usize},
+    Segment{index:usize,tiled:bool},
+    Raw{index:usize},
+    RgbaImage{width:usize,height:usize,orientation:usize},
+    RgbaStrip{row:usize},
+    RgbaTile{x:usize,y:usize},
+}
 impl Handle{
     pub fn native_ok(&self)->R<()>{
         let m=&self.meta;
@@ -71,11 +81,12 @@ impl Handle{
         if output.len()!=needed{return Err((NOTIMPL,"special codec native layout mismatch"));}
         Ok(output)
     }
-    pub fn read(&mut self,kind:u32,a:usize,b:usize,c:usize,_d:usize,limit:usize)->R<()>{
+    /// Decodes `read` into `rendered`, at most `limit` bytes of a segment.
+    pub fn read(&mut self,read:Read,limit:usize)->R<()>{
         self.rendered=None;
         let mut budget=Budget{remaining:self.work};
-        match kind{
-            0=>{
+        match read{
+            Read::Scanline{row:a,sample:b}=>{
                 self.native_ok()?;
                 if self.ycbcr_raw()&&self.sampling()?.1>1{return Err((NOTIMPL,"vertically subsampled YCbCr requires strip/tile reads"));}
                 let m=&self.meta;if m.tiled{return Err((NOTIMPL,"scanline reads on tiled images not implemented"));}
@@ -83,32 +94,31 @@ impl Handle{
                 let row=self.raw_row(m.width)?;let idx=a/m.bh+if m.planar==2{b*m.per_plane()?}else{0};let within=(a%m.bh)*row;
                 let out=self.native_range(idx,within,row,&mut budget)?;self.rendered=Some(out);
             }
-            1|2=>{
-                self.native_ok()?;if (kind==2)!=self.meta.tiled{return Err((INVALID,"strip/tile API does not match layout"));}
+            Read::Segment{index:a,tiled}=>{
+                self.native_ok()?;if tiled!=self.meta.tiled{return Err((INVALID,"strip/tile API does not match layout"));}
                 let (row,rows)=self.native_layout(self.meta.bw,self.meta.segment_rows(a)?)?;
                 let n=product(row,rows)?.min(limit);
                 self.rendered=Some(self.native_range(a,0,n,&mut budget)?);
             }
-            3=>{
+            Read::Raw{index:a}=>{
                 let m=&self.meta;if a>=m.offsets.len(){return Err((INVALID,"segment index out of range"));}
                 let off=self.meta.offsets.get(&mut self.source,a)?;
                 let n=usize::try_from(self.meta.counts.get(&mut self.source,a)?).map_err(|_|(LIMIT,"raw segment size overflow"))?;
                 if off>self.source.len||n as u64>self.source.len-off{return Err((INVALID,"raw segment outside source"));}
                 self.rendered=Some(self.source.read(off,n.min(limit))?);
             }
-            4=>{
+            Read::RgbaImage{width:a,height:b,orientation}=>{
                 if a==0 || a>self.meta.width || b==0{return Err((INVALID,"RGBA width must fit image and height must be positive"));}
-                self.rgba(0,0,a,b.min(self.meta.height),c)?;
+                self.rgba(0,0,a,b.min(self.meta.height),orientation)?;
             }
-            5=>{
+            Read::RgbaStrip{row:a}=>{
                 let m=&self.meta;if m.tiled || a>=m.height || a%m.bh!=0{return Err((INVALID,"invalid RGBA strip row"));}
                 self.rgba(0,a,m.width,m.bh.min(m.height-a),4)?;
             }
-            6=>{
+            Read::RgbaTile{x:a,y:b}=>{
                 let m=&self.meta;if !m.tiled || a>=m.width || b>=m.height || a%m.bw!=0 || b%m.bh!=0{return Err((INVALID,"invalid RGBA tile coordinate"));}
                 self.rgba(a,b,m.bw,m.bh,4)?;
             }
-            _=>return Err((NOTIMPL,"read operation not implemented")),
         }Ok(())
     }
     pub fn rgba_ok(&self)->R<()>{

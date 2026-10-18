@@ -63,6 +63,27 @@ pub fn row_range(total:usize,row:usize,start:usize,len:usize)->(r:Result<(usize,
 pub fn directory_step(steps:usize,max:usize)->(r:Result<usize,Error>)
     ensures r.is_ok()==(steps<max),r.is_ok() ==> r.unwrap()==steps as int+1 && r.unwrap()<=max,
 {if steps>=max{Err(Error::Limit)}else{Ok(steps+1)}}
+/// A read of `len` bytes into a caller's buffer of `wanted` bytes, or of
+/// any size: the bytes copied and the buffer's extent. Like libtiff, a
+/// smaller buffer truncates the read.
+pub fn read_extent(wanted:Option<usize>,len:usize)->(r:(usize,usize))
+    ensures r.0<=r.1,r.0<=len,
+        wanted.is_none() ==> r.0==len && r.1==len,
+        wanted.is_some() ==> r.1==wanted.unwrap() && r.0==(if len<=wanted.unwrap() {len} else {wanted.unwrap()}),
+{
+    match wanted {Some(w)=>(if len<=w {len} else {w},w),None=>(len,len)}
+}
+/// The frame of a caller's RGBA raster whose first `below` pixels stay
+/// unwritten: where its `n` rendered bytes start, and its extent.
+pub fn raster_frame(below:usize,n:usize)->(r:Result<(usize,usize),Error>)
+    ensures r.is_ok()==(below as int*4+n<=isize::MAX),
+        r.is_ok() ==> r.unwrap().0==below as int*4 && r.unwrap().1==below as int*4+n,
+{
+    if below>isize::MAX as usize/4 {return Err(Error::Limit);}
+    let at=below*4;
+    if n>isize::MAX as usize-at {return Err(Error::Limit);}
+    Ok((at,at+n))
+}
 /// Failure-atomic output commit: the only written interval is exactly source.
 #[inline(always)]
 pub fn commit(source:&[u8],out:&mut[u8],at:usize)->(r:Result<(),Error>)

@@ -156,14 +156,3 @@ pub unsafe extern "C" fn vt_position(p: *mut c_void, which: u32) -> u32 {
             .ok_or((INVALID, "unknown image position"))
     })
 }
-/// After a successful read; a position it cannot compute is forgotten.
-#[no_mangle]
-pub unsafe extern "C" fn vt_advance(p: *mut c_void, kind: u32, a: u32, b: u32) {
-    guard((), || {
-        let h = handle(p)?;
-        if h.advance(kind, a, b).is_err() {
-            h.position = [u32::MAX; 3];
-        }
-        Ok(())
-    })
-}

@@ -199,7 +199,9 @@ pub unsafe extern "C" fn vt_set(p: *mut c_void, tag: u32, args: *const Plan) -> 
         if args.is_null() {
             return Err((INVALID, "null setter arguments"));
         }
-        handle(p)?.set(tag, &*args)?;
+        let h = handle(p)?;
+        h.set(tag, &*args)?;
+        h.directory_written = false;
         Ok(1)
     })
 }

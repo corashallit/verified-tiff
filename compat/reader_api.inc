@@ -22,8 +22,7 @@ void TIFFSetClientInfo(TIFF *t,void *data,const char *name){
 }
 int TIFFReadBufferSetup(TIFF *t,void *buffer,tmsize_t size){
   if(!valid(t,__func__))return 0;
-  if(size<=0){fail(t,EINVAL,__func__,"invalid read buffer size");return 0;}
-  if(!vt_read_buffer(t->state,buffer,(size_t)size)){bridge_fail(t,__func__);return 0;}return 1;
+  if(!vt_read_buffer(t->state,buffer,size)){bridge_fail(t,__func__);return 0;}return 1;
 }
 int TIFFUnsetField(TIFF *t,uint32_t tag){
   if(!valid(t,__func__)||!TIFFFieldWithTag(t,tag))return 0;

@@ -255,12 +255,16 @@ impl Handle {
         let half = |i| u16::try_from(value(&self.data, t, i, self.meta.le)?).map_err(|_| (INVALID, "pair overflow"));
         Ok(Some([half(0)?, half(1)?]))
     }
+    /// A 16-bit main directory field, defaulted if `defaulted`.
+    pub fn field16(&mut self, key: u16, defaulted: bool) -> R<Option<u16>> {
+        Ok(match self.get(key.into(), defaulted)? {
+            Some(v) if v.count == 1 && v.value[0].kind == U16 => Some(v.value[0].bits as u16),
+            _ => None,
+        })
+    }
     /// A 16-bit main directory field, defaulted, or `fallback`.
     pub fn defaulted16(&mut self, key: u16, fallback: u16) -> R<u16> {
-        Ok(match self.get(key.into(), true)? {
-            Some(v) if v.count == 1 && v.value[0].kind == U16 => v.value[0].bits as u16,
-            _ => fallback,
-        })
+        Ok(self.field16(key, true)?.unwrap_or(fallback))
     }
     /// A ColorMap's or TransferFunction's channel pointers, if it has the
     /// length the bit depth implies. Like libtiff, a defaulted
@@ -435,22 +439,6 @@ pub unsafe extern "C" fn vt_get(p: *mut c_void, tag: u32, defaulted: i32, out: *
             return Err((INVALID, "null getter output"));
         }
         match handle(p)?.get(tag, defaulted != 0)? {
-            Some(v) => {
-                *out = v;
-                Ok(1)
-            }
-            None => Ok(0),
-        }
-    })
-}
-/// A scalar integer field, for TIFFIsUpSampled.
-#[no_mangle]
-pub unsafe extern "C" fn vt_scalar(p: *mut c_void, key: u32, defaulted: i32, out: *mut u64) -> i32 {
-    guard(-1, || {
-        if out.is_null() {
-            return Err((INVALID, "null metadata output"));
-        }
-        match handle(p)?.scalar(key, defaulted != 0)? {
             Some(v) => {
                 *out = v;
                 Ok(1)

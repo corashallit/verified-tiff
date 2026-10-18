@@ -32,7 +32,6 @@ struct tiff {
   uint32_t flags;
   struct vt_client_info *client_info;
   TIFFTagMethods methods;
-  int directory_written;
 };
 static _Thread_local int last_code;
 static _Thread_local char last_message[512];
@@ -334,7 +333,7 @@ TIFF *TIFFClientOpenExt(const char *name, const char *mode, thandle_t client,
   }
   /* Like libtiff, a writer never asks for the size of its new output. */
   uint64_t n = t->flags & VT_WRITE ? 0 : size(client);
-  t->state=vt_open_client(client, read, seek, n, &t->options.limits,
+  t->state=vt_open_client(client, read, write, seek, n, &t->options.limits,
       sizeof(*t)+strlen(t->name)+1, t->flags);
   if (!t->state) {
     bridge_fail(t, __func__);
@@ -355,7 +354,8 @@ void TIFFCleanup(TIFF *t) { destroy(t); }
 void TIFFClose(TIFF *t) {
   if (!t)
     return;
-  if((t->flags&VT_WRITE)&&!t->directory_written)(void)TIFFWriteDirectory(t);
+  if (!vt_flush(t->state))
+    bridge_fail(t, __func__);
   int fd = t->owned_fd;
   TIFFCloseProc close_cb = t->close;
   thandle_t c = t->client;
@@ -398,9 +398,7 @@ int TIFFIsByteSwapped(TIFF *t) {
 int TIFFIsMSB2LSB(TIFF *t) { return valid(t, __func__) ? 1 : 0; }
 int TIFFIsBigTIFF(TIFF *t) { return (int)info(t, 14); }
 int TIFFIsUpSampled(TIFF *t) {
-  uint64_t photo = 0, rgb = 0;
-  return valid(t, __func__) && vt_scalar(t->state, TIFFTAG_PHOTOMETRIC, 1, &photo) == 1 &&
-         photo == 6 && vt_scalar(t->state, TIFFTAG_JPEGCOLORMODE, 1, &rgb) == 1 && rgb;
+  return valid(t, __func__) && vt_upsampled(t->state);
 }
 tdir_t TIFFCurrentDirectory(TIFF *t) { return (tdir_t)info(t, 2); }
 uint64_t TIFFCurrentDirOffset(TIFF *t) { return info(t, 3); }
@@ -547,7 +545,6 @@ static int default_setfield(TIFF *t, uint32_t tag, va_list ap) {
     bridge_fail(t, "TIFFSetField");
     return 0;
   }
-  t->directory_written = 0;
   return 1;
 }
 int TIFFVSetField(TIFF *t,uint32_t tag,va_list ap){
@@ -628,15 +625,12 @@ uint64_t TIFFRawStripSize64(TIFF *t, uint32_t k) {
   return TIFFGetStrileByteCount(t, k);
 }
 tmsize_t TIFFRawStripSize(TIFF *t, uint32_t k) {
-  int error = 0;
-  uint64_t n = strile(t, k, 1, &error);
-  if (error)
+  if (!valid(t, __func__))
     return -1;
-  if (n > PTRDIFF_MAX) {
-    fail(t, EFBIG, __func__, "raw strip size overflow");
-    return -1;
-  }
-  return (tmsize_t)n;
+  int64_t n = vt_raw_size(t->state, k);
+  if (n < 0)
+    bridge_fail(t, __func__);
+  return n;
 }
 int TIFFCheckTile(TIFF *t, uint32_t x, uint32_t y, uint32_t z, uint16_t s) {
   if (!valid(t, __func__))
@@ -668,104 +662,57 @@ uint32_t TIFFComputeStrip(TIFF *t, uint32_t row, uint16_t s) {
   }
   return k;
 }
-static tmsize_t read_bytes(TIFF *t, unsigned kind, uint32_t a, uint32_t b,
-                           void *buf, tmsize_t size) {
-  if (!valid(t, "TIFF read"))
+/* Reads copy into the caller's buffer only when they succeed. */
+static tmsize_t read_into(TIFF *t, unsigned op, uint32_t a, uint32_t b,
+                          void *buf, tmsize_t size, const char *fn) {
+  if (!valid(t, fn))
     return -1;
-  if (size < -1 || (!buf && size != 0)) {
-    fail(t, EINVAL, "TIFF read", "invalid destination/size");
-    return -1;
-  }
-  if (size==0) {
-    if (a>=info(t,7) || (kind==1 && TIFFIsTiled(t)) || (kind==2 && !TIFFIsTiled(t))) {
-      fail(t,EINVAL,"TIFF read","invalid segment/layout"); return -1;
-    }
-    return 0;
-  }
-  size_t n = 0;
-  const uint8_t *p = vt_read_size(t->state, kind, a, b, size<0?SIZE_MAX:(size_t)size, &n);
-  if (!p) {
-    bridge_fail(t, "TIFF read");
-    return -1;
-  }
-  if (size >= 0 && (uint64_t)size < n)
-    n = (size_t)size;
-  if (n && !vt_commit(buf,size<0?n:(size_t)size,0,p,n)){bridge_fail(t,"TIFF read");return -1;}
-  return (tmsize_t)n;
+  int64_t n = vt_read_into(t->state, op, a, b, buf, size);
+  if (n < 0)
+    bridge_fail(t, fn);
+  return n;
 }
 int TIFFReadScanline(TIFF *t, void *buf, uint32_t row, uint16_t sample) {
-  tmsize_t n = read_bytes(t, 0, row, sample, buf, -1);
-  if (n < 0)
-    return -1;
-  vt_advance(t->state, VT_ROW, row, sample);
-  return 1;
+  return read_into(t, VT_READ_SCANLINE, row, sample, buf, -1, __func__) < 0 ? -1 : 1;
 }
 tmsize_t TIFFReadEncodedStrip(TIFF *t, uint32_t k, void *b, tmsize_t n) {
-  tmsize_t r = read_bytes(t, 1, k, 0, b, n);
-  if (r >= 0)
-    vt_advance(t->state, VT_STRIP, k, 0);
-  return r;
+  return read_into(t, VT_READ_STRIP, k, 0, b, n, __func__);
 }
 tmsize_t TIFFReadEncodedTile(TIFF *t, uint32_t k, void *b, tmsize_t n) {
-  tmsize_t r = read_bytes(t, 2, k, 0, b, n);
-  if (r >= 0)
-    vt_advance(t->state, VT_TILE, k, 0);
-  return r;
+  return read_into(t, VT_READ_TILE, k, 0, b, n, __func__);
 }
 tmsize_t TIFFReadRawStrip(TIFF *t, uint32_t k, void *b, tmsize_t n) {
-  if (!valid(t, __func__) || TIFFIsTiled(t)) {
-    fail(t, EINVAL, __func__, "not a striped image");
-    return -1;
-  }
-  return read_bytes(t, 3, k, 0, b, n);
+  return read_into(t, VT_READ_RAW_STRIP, k, 0, b, n, __func__);
 }
 tmsize_t TIFFReadRawTile(TIFF *t, uint32_t k, void *b, tmsize_t n) {
-  if (!valid(t, __func__) || !TIFFIsTiled(t)) {
-    fail(t, EINVAL, __func__, "not a tiled image");
-    return -1;
-  }
-  return read_bytes(t, 3, k, 0, b, n);
+  return read_into(t, VT_READ_RAW_TILE, k, 0, b, n, __func__);
 }
 tmsize_t TIFFReadTile(TIFF *t, void *b, uint32_t x, uint32_t y, uint32_t z,
                       uint16_t s) {
   uint32_t k = TIFFComputeTile(t, x, y, z, s);
   return k == UINT32_MAX ? -1 : TIFFReadEncodedTile(t, k, b, -1);
 }
-static int rgba(TIFF *t, unsigned kind, uint32_t a, uint32_t b,
-                uint32_t orientation, uint32_t *out) {
-  if (!valid(t, "TIFF RGBA"))
+static int rgba(TIFF *t, unsigned op, uint32_t a, uint32_t b,
+                uint32_t orientation, uint32_t *out, const char *fn) {
+  if (!valid(t, fn))
     return 0;
-  if (!out) {
-    fail(t, EINVAL, "TIFF RGBA", "null raster");
-    return 0;
-  }
-  size_t len = 0;
-  const uint8_t *p = vt_read(t->state, kind, a, b, orientation, 0, &len);
-  if (!p) {
-    bridge_fail(t, "TIFF RGBA");
+  if (!vt_rgba_into(t->state, op, a, b, orientation, out)) {
+    bridge_fail(t, fn);
     return 0;
   }
-  size_t skip=0;
-  if(kind==4 && b>info(t,1)){
-    uint64_t words=(uint64_t)(b-info(t,1))*a;
-    if(words>PTRDIFF_MAX/sizeof(*out)){fail(t,EFBIG,"TIFF RGBA","raster extent overflow");return 0;}
-    skip=(size_t)words;
-  }
-  size_t offset=skip*sizeof(*out);
-  if(len>SIZE_MAX-offset||!vt_commit((uint8_t*)out,offset+len,offset,p,len)){bridge_fail(t,"TIFF RGBA");return 0;}
   return 1;
 }
 int TIFFReadRGBAImageOriented(TIFF *t, uint32_t w, uint32_t h, uint32_t *p,
                               int o, int stop) {
   (void)stop;
-  return rgba(t, 4, w, h, (uint32_t)o, p);
+  return rgba(t, VT_RGBA_IMAGE, w, h, (uint32_t)o, p, __func__);
 }
 int TIFFReadRGBAImage(TIFF *t, uint32_t w, uint32_t h, uint32_t *p, int stop) {
   return TIFFReadRGBAImageOriented(t, w, h, p, ORIENTATION_BOTLEFT, stop);
 }
 int TIFFReadRGBAStripExt(TIFF *t, uint32_t row, uint32_t *p, int stop) {
   (void)stop;
-  return rgba(t, 5, row, 0, 4, p);
+  return rgba(t, VT_RGBA_STRIP, row, 0, ORIENTATION_BOTLEFT, p, __func__);
 }
 int TIFFReadRGBAStrip(TIFF *t, uint32_t row, uint32_t *p) {
   return TIFFReadRGBAStripExt(t, row, p, 0);
@@ -773,7 +720,7 @@ int TIFFReadRGBAStrip(TIFF *t, uint32_t row, uint32_t *p) {
 int TIFFReadRGBATileExt(TIFF *t, uint32_t x, uint32_t y, uint32_t *p,
                         int stop) {
   (void)stop;
-  return rgba(t, 6, x, y, 4, p);
+  return rgba(t, VT_RGBA_TILE, x, y, ORIENTATION_BOTLEFT, p, __func__);
 }
 int TIFFReadRGBATile(TIFF *t, uint32_t x, uint32_t y, uint32_t *p) {
   return TIFFReadRGBATileExt(t, x, y, p, 0);
@@ -800,28 +747,26 @@ int TIFFRGBAImageBegin(TIFFRGBAImage *img, TIFF *t, int stop,
   memset(img, 0, sizeof(*img));
   if (!TIFFRGBAImageOK(t, message))
     return 0;
+  struct vt_rgba r;
+  if (!vt_rgba_begin(t->state, &r)) {
+    bridge_fail(t, __func__);
+    return 0;
+  }
   img->tif = t;
-  img->width = (uint32_t)info(t, 0);
-  img->height = (uint32_t)info(t, 1);
   img->stoponerr = stop;
-  TIFFGetFieldDefaulted(t, TIFFTAG_ORIENTATION, &img->orientation);
-  img->req_orientation = 4;
-  img->isContig = info(t, 11) == 1;
+  img->isContig = r.contig;
+  img->alpha = r.alpha;
+  img->width = r.width;
+  img->height = r.height;
+  img->bitspersample = r.bits;
+  img->samplesperpixel = r.samples;
+  img->orientation = r.orientation;
+  img->req_orientation = ORIENTATION_BOTLEFT;
+  img->photometric = r.photometric;
+  img->redcmap = (uint16_t *)r.colormap[0];
+  img->greencmap = (uint16_t *)r.colormap[1];
+  img->bluecmap = (uint16_t *)r.colormap[2];
   img->get = TIFFRGBAImageGet;
-  TIFFGetFieldDefaulted(t, TIFFTAG_BITSPERSAMPLE, &img->bitspersample);
-  TIFFGetFieldDefaulted(t, TIFFTAG_SAMPLESPERPIXEL, &img->samplesperpixel);
-  /* Without the tag, libtiff guesses RGB or grayscale from the samples. */
-  if (!TIFFGetField(t, TIFFTAG_PHOTOMETRIC, &img->photometric))
-    img->photometric = (uint16_t)info(t, 16);
-  uint16_t count = 0, *extra = NULL;
-  /* An unspecified first extra sample beyond three is associated alpha. */
-  TIFFGetFieldDefaulted(t, TIFFTAG_EXTRASAMPLES, &count, &extra);
-  if (count)
-    img->alpha = extra[0] ? extra[0]
-                 : img->samplesperpixel > 3 ? EXTRASAMPLE_ASSOCALPHA : 0;
-  if (img->photometric == PHOTOMETRIC_PALETTE)
-    TIFFGetField(t, TIFFTAG_COLORMAP, &img->redcmap, &img->greencmap,
-                 &img->bluecmap);
   return 1;
 }
 int TIFFRGBAImageGet(TIFFRGBAImage *img, uint32_t *out, uint32_t w,
@@ -834,18 +779,15 @@ int TIFFRGBAImageGet(TIFFRGBAImage *img, uint32_t *out, uint32_t w,
     vt_not_implemented_for(img->tif, "custom TIFFRGBAImage callbacks");
     return 0;
   }
-  if (!valid(img->tif,__func__) || !out || img->row_offset<0 || img->col_offset<0 || (uint32_t)img->row_offset>=img->height) {
-    fail(img->tif,EINVAL,__func__,"invalid RGBA region/output"); return 0;
+  if (!valid(img->tif, __func__))
+    return 0;
+  if (!vt_region_into(img->tif->state, img->col_offset, img->row_offset,
+                      img->height, w, h, img->orientation,
+                      img->req_orientation, out)) {
+    bridge_fail(img->tif, __func__);
+    return 0;
   }
-  uint32_t available=img->height-(uint32_t)img->row_offset;
-  uint32_t rows=h<available?h:available;
-  uint64_t skip=(uint64_t)(h-rows)*w;
-  if(skip>PTRDIFF_MAX/sizeof(*out)){fail(img->tif,EFBIG,__func__,"RGBA raster overflow");return 0;}
-  size_t n=0; const uint8_t *p=vt_region(img->tif->state,(uint32_t)img->col_offset,
-      (uint32_t)img->row_offset,w,rows,img->orientation,img->req_orientation,&n);
-  if (!p) {bridge_fail(img->tif,__func__); return 0;}
-  size_t offset=(size_t)skip*sizeof(*out);
-  if(n>SIZE_MAX-offset||!vt_commit((uint8_t*)out,offset+n,offset,p,n)){bridge_fail(img->tif,__func__);return 0;}return 1;
+  return 1;
 }
 void TIFFRGBAImageEnd(TIFFRGBAImage *img) {
   if (img)
