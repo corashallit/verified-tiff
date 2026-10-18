@@ -56,7 +56,7 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=m");
     if env::var_os("CARGO_FEATURE_REFERENCE").is_some() { reference(&root, &here, &out, &compile); }
     for f in ["tiff_compat.c", "bridge.h", "generate_stubs.py", "include/tiff.h", "include/tiffio.h",
-              "fields.inc", "field_schemas.inc", "reader_api.inc", "color_api.inc", "logluv_api.inc",
+              "fields.inc", "reader_api.inc", "color_api.inc", "logluv_api.inc",
               "uv_table.inc", "writer.inc"] {
         println!("cargo:rerun-if-changed={}", compat.join(f).display());
     }

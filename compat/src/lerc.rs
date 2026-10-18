@@ -12,7 +12,7 @@ impl Handle {
             _=>return Err((NOTIMPL,"LERC sample type not supported")),
         };
         let channels=if m.planar==2{1}else{m.ch};
-        let extra=match find(&m.tags,50674){
+        let extra=match find(&m.tags,tag::LERC_PARAMETERS){
             Some(tag)=>{
                 if tag.count!=2{return Err((INVALID,"LERC parameters require two values"));}
                 let version=value(&self.data,tag,0,m.le)?;

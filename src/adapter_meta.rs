@@ -83,6 +83,111 @@ pub fn convert_integer(v:u64,source:u16,target:u16)->(r:Result<u64,Error>)
     }
     Ok(n as u64)
 }
+/// The C types the adapter writes through a getter's pointers, numbered as
+/// in `compat/bridge.h`: unsigned and signed integers of 1, 2, 4 and 8
+/// bytes, float, double, then a pointer.
+pub open spec fn c_width(c:u32)->int {
+    if c==0||c==1 {1} else if c==2||c==3 {2} else if c==4||c==5||c==8 {4} else if c==6||c==7||c==9||c==10 {8} else {0}
+}
+pub open spec fn c_signed(c:u32)->bool {c==1||c==3||c==5||c==7}
+pub open spec fn c_real(c:u32)->bool {c==8||c==9}
+/// The C type a scalar of host type `k` is got as: exactly as wide as the
+/// TIFF type, and signed or floating point exactly when it is.
+pub fn scalar_type(k:u16)->(r:Option<u32>)
+    ensures r.is_some()==(integer_kind(k)&&k!=2||k==11||k==12),
+        r.is_some() ==> c_width(r.unwrap())==container::field_width(k)
+            && c_signed(r.unwrap())==signed_kind(k) && c_real(r.unwrap())==(k==11||k==12),
+{
+    if k==1||k==7 {Some(0)} else if k==6 {Some(1)} else if k==3 {Some(2)} else if k==8 {Some(3)}
+    else if k==4||k==13 {Some(4)} else if k==9 {Some(5)} else if k==16||k==18 {Some(6)} else if k==17 {Some(7)}
+    else if k==11 {Some(8)} else if k==12 {Some(9)} else {None}
+}
+/// The C type TIFFSetField takes a scalar of host type `k` in. C's default
+/// argument promotions pass a narrower integer as an `int` and a float as a
+/// `double`; wider integers come as wide, with the TIFF type's signedness.
+pub fn argument_type(k:u16)->(r:Option<u32>)
+    ensures r.is_some()==(integer_kind(k)&&k!=2||k==11||k==12),
+        r.is_some() ==> if k==11||k==12 {r.unwrap()==9}
+            else if container::field_width(k)<4 {r.unwrap()==5}
+            else {c_width(r.unwrap())==container::field_width(k) && c_signed(r.unwrap())==signed_kind(k) && !c_real(r.unwrap())},
+{
+    match scalar_type(k) {
+        Some(c) => if c<=3 {Some(5)} else if c==8 {Some(9)} else {Some(c)},
+        None => None,
+    }
+}
+/// TIFFSetField reads a field's array argument as as many values as the
+/// caller passes, within the 16-bit count or, for a write count of
+/// TIFF_VARIABLE2 (-3), the 32-bit one; or as its fixed write count.
+pub open spec fn set_count_valid(wc:i32,pass:bool,passed:int)->bool {
+    if pass {0<=passed<=(if wc== -3 {4294967295int} else {65535int})} else {wc>0}
+}
+pub open spec fn set_count(wc:i32,pass:bool,passed:int)->int {if pass {passed} else {wc as int}}
+/// The number of values TIFFSetField reads from an array argument, and
+/// their bytes.
+pub fn set_extent(host:u16,wc:i32,pass:bool,passed:i64)->(r:Result<(usize,usize),Error>)
+    ensures r.is_ok()==(container::field_width(host)>0 && set_count_valid(wc,pass,passed as int)
+            && set_count(wc,pass,passed as int)*container::field_width(host)<=usize::MAX),
+        r.is_ok() ==> r.unwrap().0==set_count(wc,pass,passed as int)
+            && r.unwrap().1==r.unwrap().0*container::field_width(host),
+{
+    let w=container::field_size(host);
+    if w==0 {return Err(Error::Invalid);}
+    let n:usize=if pass {
+        let max:i64=if wc== -3 {4294967295} else {65535};
+        if passed<0||passed>max {return Err(Error::Invalid);}
+        passed as usize
+    } else {
+        if wc<=0 {return Err(Error::Invalid);}
+        wc as usize
+    };
+    match mul(n,w) {Ok(bytes)=>Ok((n,bytes)),Err(e)=>Err(e)}
+}
+/// libtiff implies 2^BitsPerSample entries for each channel of a ColorMap,
+/// which stores three, and of a TransferFunction, which stores one curve or
+/// three. Callers index each channel by sample value.
+pub open spec fn entries(bits:nat)->nat decreases bits {if bits==0 {1} else {2*entries((bits-1) as nat)}}
+pub open spec fn channels_valid(colormap:bool,stored:int,bits:nat)->bool {
+    bits<=16 && (stored==3*entries(bits) || !colormap && stored==entries(bits))
+}
+proof fn entries_pow(bits:nat)
+    requires bits<=16,
+    ensures entries(bits)==crate::deflate_bits::pow(bits as int),
+    decreases bits,
+{
+    crate::deflate_bits::pow_bound(bits as int);
+    if bits>0 {entries_pow((bits-1) as nat);}
+}
+/// A ColorMap has three channel pointers. A TransferFunction has three when
+/// there are several color samples, which share a single stored curve.
+pub open spec fn channel_parts(colormap:bool,samples:int,extras:int)->int {
+    if colormap || samples>extras+1 {3} else {1}
+}
+/// Channel `i` of `parts` starts at entry `i*stride` and has `each` entries.
+pub struct Channels{pub parts:usize,pub each:usize,pub stride:usize}
+pub fn channels(colormap:bool,stored:usize,bits:u16,samples:u16,extras:u16)->(r:Result<Channels,Error>)
+    ensures r.is_ok()==channels_valid(colormap,stored as int,bits as nat),
+        r.is_ok() ==> r.unwrap().each==entries(bits as nat)
+            && r.unwrap().parts==channel_parts(colormap,samples as int,extras as int)
+            && r.unwrap().stride==(if stored==3*r.unwrap().each {r.unwrap().each} else {0})
+            && (r.unwrap().parts-1)*r.unwrap().stride+r.unwrap().each<=stored,
+{
+    if bits>16{return Err(Error::Invalid);}
+    proof{crate::bit_window::powers(bits as u32);crate::deflate_bits::pow_bound(bits as int);entries_pow(bits as nat);}
+    let each=(1u32<<bits) as usize;
+    let stride=if stored==3*each{each}else if !colormap&&stored==each{0}else{return Err(Error::Invalid);};
+    let parts:usize=if colormap||samples as u32>extras as u32+1{3}else{1};
+    assert((parts-1)*stride==if parts==3 {2*stride} else {0}) by(nonlinear_arith) requires parts==1||parts==3;
+    Ok(Channels{parts,each,stride})
+}
+/// TIFFSetField reads 2^BitsPerSample entries from each ColorMap channel.
+pub fn colormap_entries(bits:u16)->(r:Result<usize,Error>)
+    ensures r.is_ok()==(bits<=16), r.is_ok() ==> r.unwrap()==entries(bits as nat),
+{
+    if bits>16{return Err(Error::Invalid);}
+    proof{crate::bit_window::powers(bits as u32);crate::deflate_bits::pow_bound(bits as int);entries_pow(bits as nat);}
+    Ok((1u32<<bits) as usize)
+}
 /// Validate every source element before the adapter forms a slice. Exact count
 /// acceptance excludes both short metadata and spurious always-error code.
 pub fn payload(len:usize,at:usize,count:usize,kind:u16)->(r:Result<usize,Error>)

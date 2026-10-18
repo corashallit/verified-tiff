@@ -16,6 +16,11 @@ checks after existing validation. It is not an adjusted denominator or an
 exclusion list. Source hashes, complete counters and separate per-binary raw
 coverage data are in `evidence/c-shim-hardening/`.
 
+Most of the logic these tests first covered has since moved into Rust behind
+the [C ABI edge](c-api.md#the-c-abi-edge). The table records the pass that
+added the tests; `scripts/test-c-coverage.sh` still requires complete coverage
+of the C that remains.
+
 ## Fixes
 
 * Lab initialization now calculates green and blue table steps from their own

@@ -6,6 +6,16 @@ use super::*;
 use verified_tiff::adapter_geometry as geometry;
 use verified_tiff::{native,native_samples as ns};
 
+/// The reads of the C API: a scanline, an encoded or raw strip or tile, or
+/// an RGBA raster of the image, a strip or a tile.
+pub enum Read{
+    Scanline{row:usize,sample:usize},
+    Segment{index:usize,tiled:bool},
+    Raw{index:usize},
+    RgbaImage{width:usize,height:usize,orientation:usize},
+    RgbaStrip{row:usize},
+    RgbaTile{x:usize,y:usize},
+}
 impl Handle{
     pub fn native_ok(&self)->R<()>{
         let m=&self.meta;
@@ -71,11 +81,12 @@ impl Handle{
         if output.len()!=needed{return Err((NOTIMPL,"special codec native layout mismatch"));}
         Ok(output)
     }
-    pub fn read(&mut self,kind:u32,a:usize,b:usize,c:usize,_d:usize,limit:usize)->R<()>{
+    /// Decodes `read` into `rendered`, at most `limit` bytes of a segment.
+    pub fn read(&mut self,read:Read,limit:usize)->R<()>{
         self.rendered=None;
         let mut budget=Budget{remaining:self.work};
-        match kind{
-            0=>{
+        match read{
+            Read::Scanline{row:a,sample:b}=>{
                 self.native_ok()?;
                 if self.ycbcr_raw()&&self.sampling()?.1>1{return Err((NOTIMPL,"vertically subsampled YCbCr requires strip/tile reads"));}
                 let m=&self.meta;if m.tiled{return Err((NOTIMPL,"scanline reads on tiled images not implemented"));}
@@ -83,32 +94,31 @@ impl Handle{
                 let row=self.raw_row(m.width)?;let idx=a/m.bh+if m.planar==2{b*m.per_plane()?}else{0};let within=(a%m.bh)*row;
                 let out=self.native_range(idx,within,row,&mut budget)?;self.rendered=Some(out);
             }
-            1|2=>{
-                self.native_ok()?;if (kind==2)!=self.meta.tiled{return Err((INVALID,"strip/tile API does not match layout"));}
+            Read::Segment{index:a,tiled}=>{
+                self.native_ok()?;if tiled!=self.meta.tiled{return Err((INVALID,"strip/tile API does not match layout"));}
                 let (row,rows)=self.native_layout(self.meta.bw,self.meta.segment_rows(a)?)?;
                 let n=product(row,rows)?.min(limit);
                 self.rendered=Some(self.native_range(a,0,n,&mut budget)?);
             }
-            3=>{
+            Read::Raw{index:a}=>{
                 let m=&self.meta;if a>=m.offsets.len(){return Err((INVALID,"segment index out of range"));}
                 let off=self.meta.offsets.get(&mut self.source,a)?;
                 let n=usize::try_from(self.meta.counts.get(&mut self.source,a)?).map_err(|_|(LIMIT,"raw segment size overflow"))?;
                 if off>self.source.len||n as u64>self.source.len-off{return Err((INVALID,"raw segment outside source"));}
                 self.rendered=Some(self.source.read(off,n.min(limit))?);
             }
-            4=>{
+            Read::RgbaImage{width:a,height:b,orientation}=>{
                 if a==0 || a>self.meta.width || b==0{return Err((INVALID,"RGBA width must fit image and height must be positive"));}
-                self.rgba(0,0,a,b.min(self.meta.height),c)?;
+                self.rgba(0,0,a,b.min(self.meta.height),orientation)?;
             }
-            5=>{
+            Read::RgbaStrip{row:a}=>{
                 let m=&self.meta;if m.tiled || a>=m.height || a%m.bh!=0{return Err((INVALID,"invalid RGBA strip row"));}
                 self.rgba(0,a,m.width,m.bh.min(m.height-a),4)?;
             }
-            6=>{
+            Read::RgbaTile{x:a,y:b}=>{
                 let m=&self.meta;if !m.tiled || a>=m.width || b>=m.height || a%m.bw!=0 || b%m.bh!=0{return Err((INVALID,"invalid RGBA tile coordinate"));}
                 self.rgba(a,b,m.bw,m.bh,4)?;
             }
-            _=>return Err((NOTIMPL,"read operation not implemented")),
         }Ok(())
     }
     pub fn rgba_ok(&self)->R<()>{
@@ -123,7 +133,7 @@ impl Handle{
         if self.ycbcr_raw(){self.sampling()?;}
         else if m.photo==6&&!matches!(m.compression,6|7){return Err((NOTIMPL,"RGBA conversion of plain YCbCr samples"));}
         if matches!(m.photo,5|8)&&!matches!(m.bits,8|16){return Err((NOTIMPL,"CMYK/Lab bit depth"));}
-        if m.photo==5&&scalar(&self.data,&m.tags,332,1,m.le)?!=1{return Err((NOTIMPL,"non-CMYK separated inks"));}
+        if m.photo==5&&scalar(&self.data,&m.tags,tag::INKSET,1,m.le)?!=1{return Err((NOTIMPL,"non-CMYK separated inks"));}
         Ok(())
     }
     pub fn rgba(&mut self,x:usize,y:usize,w:usize,h:usize,orientation:usize)->R<()>{
@@ -277,25 +287,27 @@ impl Handle{
         let first_count=self.meta.counts.get(&mut self.source,0)?;
         let m=&self.meta;let rows=m.segment_rows(k)?;
         if m.planar!=1{return Err((NOTIMPL,"special codec planar layout not implemented"));}
-        let jif=scalar(&self.data,&m.tags,513,0,m.le)?;
-        let jlen=scalar(&self.data,&m.tags,514,0,m.le)? as usize;
+        let jif=scalar(&self.data,&m.tags,tag::JPEGIFOFFSET,0,m.le)?;
+        let jlen=scalar(&self.data,&m.tags,tag::JPEGIFBYTECOUNT,0,m.le)? as usize;
         let cap=self.data.len().checked_add(encoded.len()).and_then(|n|n.checked_add(jlen)).and_then(|n|n.checked_add(8192)).ok_or((LIMIT,"segment container overflow"))?;
         let mut b=Builder::new(cap,&self.source.mem,m.le)?;
-        b.number(256,4,m.bw as u32)?;b.number(257,4,rows as u32)?;
-        b.repeated(258,m.bits as u16,m.ch)?;b.number(259,3,m.compression as u32)?;
-        b.number(262,3,m.photo as u32)?;b.number(266,3,m.fill as u32)?;
-        b.number(274,3,1)?;b.number(277,3,m.ch as u32)?;b.number(278,4,rows as u32)?;
-        b.number(284,3,1)?;b.number(317,3,m.predictor as u32)?;
-        b.repeated(339,m.format,m.ch)?;
+        b.number(tag::IMAGEWIDTH,4,m.bw as u32)?;b.number(tag::IMAGELENGTH,4,rows as u32)?;
+        b.repeated(tag::BITSPERSAMPLE,m.bits as u16,m.ch)?;b.number(tag::COMPRESSION,3,m.compression as u32)?;
+        b.number(tag::PHOTOMETRIC,3,m.photo as u32)?;b.number(tag::FILLORDER,3,m.fill as u32)?;
+        b.number(tag::ORIENTATION,3,1)?;b.number(tag::SAMPLESPERPIXEL,3,m.ch as u32)?;b.number(tag::ROWSPERSTRIP,4,rows as u32)?;
+        b.number(tag::PLANARCONFIG,3,1)?;b.number(tag::PREDICTOR,3,m.predictor as u32)?;
+        b.repeated(tag::SAMPLEFORMAT,m.format,m.ch)?;
         // WebP's output already carries the stored components. Suppress the
         // old raster API's lossy unassociation; the caller owns alpha meaning.
-        if let Some(t)=find(&m.tags,338).filter(|t|t.count>0){if m.compression==50001 && t.count==1{b.number(338,3,2)?;}else{b.raw_tag(&self.data,t)?;}}
-        for key in [292,293,347,512,515,529,530,531,532]{if key==515 && jif!=0{continue;}if let Some(t)=find(&m.tags,key){b.raw_tag(&self.data,t)?;}}
-        for key in [519,520,521]{if jif!=0{continue;}if let Some(t)=find(&m.tags,key){
+        if let Some(t)=find(&m.tags,tag::EXTRASAMPLES).filter(|t|t.count>0){if m.compression==50001 && t.count==1{b.number(tag::EXTRASAMPLES,3,2)?;}else{b.raw_tag(&self.data,t)?;}}
+        for key in [tag::GROUP3OPTIONS,tag::GROUP4OPTIONS,tag::JPEGTABLES,tag::JPEGPROC,tag::JPEGRESTARTINTERVAL,
+            tag::YCBCRCOEFFICIENTS,tag::YCBCRSUBSAMPLING,tag::YCBCRPOSITIONING,tag::REFERENCEBLACKWHITE]{
+            if key==tag::JPEGRESTARTINTERVAL && jif!=0{continue;}if let Some(t)=find(&m.tags,key){b.raw_tag(&self.data,t)?;}}
+        for key in [tag::JPEGQTABLES,tag::JPEGDCTABLES,tag::JPEGACTABLES]{if jif!=0{continue;}if let Some(t)=find(&m.tags,key){
             if t.count>3{return Err((INVALID,"OJPEG table count"));}let mut offsets=[0u32;3];
             for i in 0..t.count{
                 let at=value(&self.data,t,i,m.le)?;
-                let n=if key==519{64}else{let counts=self.source.read(at,16)?;16+counts.iter().map(|v|*v as usize).sum::<usize>()};
+                let n=if key==tag::JPEGQTABLES{64}else{let counts=self.source.read(at,16)?;16+counts.iter().map(|v|*v as usize).sum::<usize>()};
                 if n>272{return Err((INVALID,"OJPEG Huffman table size"));}
                 let raw=self.source.read(at,n)?;offsets[i]=b.append(&raw)?;
             }
@@ -317,21 +329,21 @@ impl Handle{
             }
             let v=native::jpeg_shared(&shared,budget).map_err(err)?;
             if v[12]!=m.bw || v[13]!=m.height || v[14]!=m.ch{return Err((INVALID,"OJPEG shared frame geometry"));}
-            let sub=find(&m.tags,530);let hs=if let Some(t)=sub{value(&self.data,t,0,m.le)? as usize}else{2};let vs=if let Some(t)=sub{value(&self.data,t,1,m.le)? as usize}else{2};
+            let sub=find(&m.tags,tag::YCBCRSUBSAMPLING);let hs=if let Some(t)=sub{value(&self.data,t,0,m.le)? as usize}else{2};let vs=if let Some(t)=sub{value(&self.data,t,1,m.le)? as usize}else{2};
             if m.photo==6 && (v[15]!=hs || v[16]!=vs){return Err((INVALID,"OJPEG shared sampling"));}
-            for (key,selectors,base) in [(519,20,0),(520,23,4),(521,26,8)]{
+            for (key,selectors,base) in [(tag::JPEGQTABLES,20,0),(tag::JPEGDCTABLES,23,4),(tag::JPEGACTABLES,26,8)]{
                 let mut offsets=[0u32;3];
                 if m.ch>3{return Err((INVALID,"OJPEG component count"));}
                 for c in 0..m.ch{
                     let selector=v[selectors+c];if selector>=4{return Err((INVALID,"OJPEG table selector"));}
                     let at=v[base+selector];
-                    let n=if key==519{64}else{let counts=shared.get(at..at.checked_add(16).ok_or((LIMIT,"OJPEG table range"))?).ok_or((INVALID,"OJPEG table range"))?;16+counts.iter().map(|x|*x as usize).sum::<usize>()};
+                    let n=if key==tag::JPEGQTABLES{64}else{let counts=shared.get(at..at.checked_add(16).ok_or((LIMIT,"OJPEG table range"))?).ok_or((INVALID,"OJPEG table range"))?;16+counts.iter().map(|x|*x as usize).sum::<usize>()};
                     let table=shared.get(at..at.checked_add(n).ok_or((LIMIT,"OJPEG table range"))?).ok_or((INVALID,"OJPEG table range"))?;
                     offsets[c]=b.append(table)?;
                 }
                 b.longs(key,&offsets[..m.ch])?;
             }
-            b.number(515,3,v[29] as u32)?;
+            b.number(tag::JPEGRESTARTINTERVAL,3,v[29] as u32)?;
             if encoded.len()>=2 && encoded[..2]==[255,218]{
                 let mut copy=Buf::new(encoded.len(),&self.source.mem)?;copy.extend(encoded)?;
                 let mut ids=[0u8;3];let mut selectors=[0u8;3];
@@ -340,7 +352,7 @@ impl Handle{
                 renamed=Some(copy);
             }
         }
-        let at=b.append(renamed.as_ref().map_or(encoded,|s|&**s))?;b.number(273,4,at)?;b.number(279,4,u32::try_from(encoded.len()).map_err(|_|(LIMIT,"special segment length"))?)?;
+        let at=b.append(renamed.as_ref().map_or(encoded,|s|&**s))?;b.number(tag::STRIPOFFSETS,4,at)?;b.number(tag::STRIPBYTECOUNTS,4,u32::try_from(encoded.len()).map_err(|_|(LIMIT,"special segment length"))?)?;
         b.finish()
     }
 }
@@ -425,7 +437,7 @@ impl Builder{
     }
     fn repeated(&mut self,key:u16,v:u16,n:usize)->R<()>{let mut s=[0u8;128];for chunk in s[..2*n].chunks_exact_mut(2){chunk.copy_from_slice(&if self.le{v.to_le_bytes()}else{v.to_be_bytes()});}self.tag(key,3,n as u32,&s[..2*n])}
     fn longs(&mut self,key:u16,v:&[u32])->R<()>{let mut s=[0;12];for (i,v) in v.iter().enumerate(){s[4*i..4*i+4].copy_from_slice(&if self.le{v.to_le_bytes()}else{v.to_be_bytes()});}self.tag(key,4,v.len() as u32,&s[..v.len()*4])}
-    fn raw_tag(&mut self,s:&[u8],t:Tag)->R<()>{let n=product(t.count,container::field_size(t.kind))?;self.tag(t.key,t.kind,u32::try_from(t.count).map_err(|_|(LIMIT,"tag count overflow"))?,&s[t.at..t.at+n])}
+    fn raw_tag<S:Values+?Sized>(&mut self,s:&S,t:Tag)->R<()>{let n=product(t.count,container::field_size(t.kind))?;self.tag(t.key,t.kind,u32::try_from(t.count).map_err(|_|(LIMIT,"tag count overflow"))?,&s.bytes(&t)[t.at..t.at+n])}
     fn finish(mut self)->R<Buf<u8>>{
         self.tags[..self.n].sort_unstable_by_key(|t|t.0);
         self.bytes[..8].copy_from_slice(if self.le{b"II\x2a\0\x08\0\0\0"}else{b"MM\0\x2a\0\0\0\x08"});

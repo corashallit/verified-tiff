@@ -72,16 +72,15 @@ acceptance proofs. Preserve the missing-EOL and duplicate-endpoint policies in
    specification, not an implicit addition to a compression tag. Do not
    import unsafe codec implementations under a "verified"
    claim.
-5. **Close the C API gaps the differential target still reports.** Strip and
-   tile offset tags are not aliased, and TileOffsets rather than the tile
-   dimensions decide whether an image is tiled. The derived Matteing/DataType
-   tags are missing. Before `JPEGCOLORMODE_RGB`, JPEG and OJPEG YCbCr sizes
-   are for upsampled RGB, where libtiff reports native subsampled sizes.
+5. **Close the C API gaps the differential target still reports.** The
+   derived Matteing/DataType tags are missing. Before `JPEGCOLORMODE_RGB`,
+   JPEG and OJPEG YCbCr sizes are for upsampled RGB, where libtiff reports
+   native subsampled sizes.
    libtiff's OJPEG codec also rewrites YCbCrSubsampling and
    JPEGInterchangeFormat from the stream and assumes YCbCr for a missing or
    RGB photometric; the shim reads the tags as stored. Predictor reads back on
-   uncompressed images. `TIFFSetField` on a reader frees every tag pointer
-   handed out earlier. Default limits (256 MiB RGBA staging, 1024 directories,
+   uncompressed images. RGBA setup reads the stored fields, where libtiff goes
+   through get hooks installed with `TIFFAccessTagMethods`. Default limits (256 MiB RGBA staging, 1024 directories,
    64 samples per pixel) reject large files libtiff opens. RGBA conversion of
    separate YCbCr planes and of palette images with extra samples is
    unsupported where libtiff draws them. libtiff 4.7.1 is not a reference for
@@ -109,8 +108,8 @@ The partial reader-oriented C API is implemented; see `c-api.md` and
 metadata-only temporary writer are now available. Future adapter work includes
 deferred strile-array loading and broader codec subsets. Exact indices/associated samples/tile padding, independent
 segments, BigTIFF, SubIFDs and broader native widths are now implemented through
-new verified primitives; see `native-compatibility.md`. Broader ABI support and formal verification of the
-FFI/metadata/output adapter remain separate tasks. Keep current ENOSYS failures
+new verified primitives; see `native-compatibility.md`. Broader ABI support remains a separate task, as does a
+proof of directory normalisation, which only the libtiff differential checks. Keep current ENOSYS failures
 explicit until their actual contracts are implemented and checked.
 
 

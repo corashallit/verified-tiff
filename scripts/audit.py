@@ -41,3 +41,15 @@ for name in ledger['files']:
         assert not re.search(pattern,(root/name).read_text()),(name,pattern)
 assert 'external_body' not in (root/'trusted-simd/src/cpu.rs').read_text()
 print('Trusted SIMD boundary: eleven integer lane operations and feature dispatch; reviewed source hashes match.')
+
+# The C ABI edge of the libtiff adapter keeps varargs, caller callbacks,
+# public structs, libc calls and libtiff's licensed color math; compat/src
+# makes every TIFF decision. Hash each C source, and none may name a tag.
+abi=json.loads((root/'compat/abi-audit.json').read_text())
+sources={str(p.relative_to(root)) for p in (root/'compat').iterdir() if p.suffix in ('.c','.h','.inc')}
+assert sources==set(abi['files']),'Review the C ABI edge sources: '+' '.join(sorted(sources^set(abi['files'])))
+for name,digest in abi['files'].items():
+    text=(root/name).read_bytes()
+    assert hashlib.sha256(text).hexdigest()==digest,'Review changed C ABI source: '+name
+    assert not re.search(rb'\b(TIFF|EXIF|GPS)TAG_',text),'The C ABI edge names a TIFF tag: '+name
+print(f'C ABI edge: {len(sources)} reviewed sources; their hashes match and none names a TIFF tag.')

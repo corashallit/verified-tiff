@@ -18,7 +18,7 @@ impl Handle {
     }
     fn reals<const N:usize>(&self,key:u16,defaults:[f32;N])->R<[f32;N]>{
         let Some(t)=find(&self.meta.tags,key)else{return Ok(defaults);};if t.count!=N{return Err((INVALID,"color metadata count"));}
-        let mut a=defaults;for (i,v) in a.iter_mut().enumerate(){*v=metadata::real(&self.data,t.at+i*container::field_size(t.kind),t.kind,self.meta.le,true)? as f32;if !v.is_finite(){return Err((INVALID,"nonfinite color metadata"));}}Ok(a)
+        let mut a=defaults;for (i,v) in a.iter_mut().enumerate(){*v=metadata::real(self.data.bytes(&t),t.at+i*container::field_size(t.kind),t.kind,self.meta.le,true)? as f32;if !v.is_finite(){return Err((INVALID,"nonfinite color metadata"));}}Ok(a)
     }
     pub fn rgba_color(&mut self,x:usize,y:usize,w:usize,h:usize,source:usize,orientation:usize)->R<()>{
         if !(1..=8).contains(&orientation)||w==0||h==0{return Err((INVALID,"RGBA dimensions/orientation"));}
@@ -28,12 +28,12 @@ impl Handle {
         if x>=right||y>=bottom{return Err((INVALID,"empty RGBA region"));}
         let across=(width-1)/bw+1;let row=m.row_bytes(bw)?;
         let (hs,vs)=if photo==6{self.sampling()?}else{(1,1)};
-        let d50=96.4250f32+100.+82.4680;let defaults=[96.4250/d50,100./d50];let white=if photo==8{self.reals(318,defaults)?}else{defaults};
+        let d50=96.4250f32+100.+82.4680;let defaults=[96.4250/d50,100./d50];let white=if photo==8{self.reals(tag::WHITEPOINT,defaults)?}else{defaults};
         if white[1]<=0.{return Err((INVALID,"white point"));}
         let reference=[white[0]/white[1]*100.,100.,(1.-white[0]-white[1])/white[1]*100.];
         let mut gamma=[0u8;1501];
         if photo==8{for (i,v) in gamma.iter_mut().enumerate(){let q=255.*((i as f64/1500.).powf(1./(2.4f32 as f64)) as f32);*v=(q+0.5).min(255.) as u8;}}
-        let luma=if photo==6{self.reals(529,[0.299,0.587,0.114])?}else{[0.299,0.587,0.114]};let rbw=if photo==6{self.reals(532,[0.,255.,128.,255.,128.,255.])?}else{[0.,255.,128.,255.,128.,255.]};
+        let luma=if photo==6{self.reals(tag::YCBCRCOEFFICIENTS,[0.299,0.587,0.114])?}else{[0.299,0.587,0.114]};let rbw=if photo==6{self.reals(tag::REFERENCEBLACKWHITE,[0.,255.,128.,255.,128.,255.])?}else{[0.,255.,128.,255.,128.,255.]};
         if luma.iter().any(|v|*v<0.||*v>1.)||luma[1]<=0.||rbw.iter().any(|v|*v<0.||*v>255.){return Err((INVALID,"YCbCr conversion coefficients"));}
         let mut out=Buf::zeros(product(product(w,h)?,4)?,self.limits.max_output,&self.source.mem)?;
         let mut budget=Budget{remaining:self.work};if out.len()>budget.remaining{return Err((LIMIT,"RGBA color work limit"));}budget.remaining-=out.len();

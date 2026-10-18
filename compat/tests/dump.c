@@ -120,6 +120,21 @@ int main(int argc, char **argv) {
       TIFFRGBAImageEnd(&img);
     }
     fputc('\n', f);
+  } else if (!strcmp(argv[2], "striles")) {
+    /* Whether the image is tiled, and its offsets and byte counts read
+     * through each strip and tile tag. */
+    static const uint32_t tags[] = {TIFFTAG_STRIPOFFSETS, TIFFTAG_TILEOFFSETS,
+                                    TIFFTAG_STRIPBYTECOUNTS, TIFFTAG_TILEBYTECOUNTS};
+    uint32_t n = TIFFIsTiled(t) ? TIFFNumberOfTiles(t) : TIFFNumberOfStrips(t);
+    fprintf(f, "%d %u", TIFFIsTiled(t), n);
+    for (int k = 0; k < 4; k++) {
+      uint64_t *v = NULL;
+      int ok = TIFFGetField(t, tags[k], &v);
+      fprintf(f, " | %d", ok);
+      for (uint32_t i = 0; ok && i < n; i++)
+        fprintf(f, " %llu", (unsigned long long)v[i]);
+    }
+    fputc('\n', f);
   } else if (!strcmp(argv[2], "counts")) {
     /* Segment byte counts as read, then with deferred and on-demand strile
      * loading. */
@@ -132,6 +147,56 @@ int main(int argc, char **argv) {
       fputc('\n', f);
       if (pass)
         TIFFClose(d);
+    }
+  } else if (!strcmp(argv[2], "lifetime")) {
+    /* Field values read through pointers taken before other fields change. */
+    uint16_t *r = NULL, *g = NULL, *b = NULL, *curve[3] = {NULL}, n = 0, *extra = NULL;
+    uint64_t *offsets = NULL;
+    float *white = NULL;
+    uint32_t size = 0;
+    const uint8_t *icc = NULL;
+    const char *text = NULL;
+    int map = TIFFGetField(t, TIFFTAG_COLORMAP, &r, &g, &b);
+    int transfer = TIFFGetField(t, TIFFTAG_TRANSFERFUNCTION, &curve[0], &curve[1], &curve[2]);
+    int extras = TIFFGetField(t, TIFFTAG_EXTRASAMPLES, &n, &extra);
+    assert(TIFFGetField(t, TIFFIsTiled(t) ? TIFFTAG_TILEOFFSETS : TIFFTAG_STRIPOFFSETS, &offsets));
+    int point = TIFFGetField(t, TIFFTAG_WHITEPOINT, &white);
+    int profile = TIFFGetField(t, TIFFTAG_ICCPROFILE, &size, &icc);
+    int described = TIFFGetField(t, TIFFTAG_IMAGEDESCRIPTION, &text);
+    assert(TIFFSetField(t, TIFFTAG_SOFTWARE, "first") && TIFFSetField(t, TIFFTAG_ARTIST, "artist") &&
+           TIFFSetField(t, TIFFTAG_SOFTWARE, "second") && TIFFUnsetField(t, TIFFTAG_ARTIST));
+    for (int i = 0; map && i < 4; i++)
+      fprintf(f, "%u %u %u ", r[i], g[i], b[i]);
+    for (int i = 0; transfer && i < 4; i++)
+      fprintf(f, "%u ", curve[0][i]);
+    for (uint16_t i = 0; extras && i < n; i++)
+      fprintf(f, "%u ", extra[i]);
+    fprintf(f, "| %llu |", (unsigned long long)offsets[0]);
+    if (point)
+      fprintf(f, " %a %a", white[0], white[1]);
+    for (uint32_t i = 0; profile && i < size; i++)
+      fprintf(f, " %02x", icc[i]);
+    fprintf(f, " %s\n", described ? text : "-");
+  } else if (!strcmp(argv[2], "channels")) {
+    /* ColorMap, TransferFunction and defaulted TransferFunction channels of
+     * the 1 << BitsPerSample entries callers index by sample value. */
+    uint16_t bits = 1, spp = 1, extras = 0, *extra = NULL;
+    TIFFGetFieldDefaulted(t, TIFFTAG_BITSPERSAMPLE, &bits);
+    TIFFGetFieldDefaulted(t, TIFFTAG_SAMPLESPERPIXEL, &spp);
+    TIFFGetFieldDefaulted(t, TIFFTAG_EXTRASAMPLES, &extras, &extra);
+    for (int i = 0; i < 3; i++) {
+      uint32_t tag = i ? TIFFTAG_TRANSFERFUNCTION : TIFFTAG_COLORMAP;
+      uint16_t *c[3] = {NULL, NULL, NULL};
+      int ok = i == 2 ? TIFFGetFieldDefaulted(t, tag, &c[0], &c[1], &c[2])
+                      : TIFFGetField(t, tag, &c[0], &c[1], &c[2]);
+      fprintf(f, "%d", ok);
+      for (int k = 0; ok && k < (i == 0 || spp - extras > 1 ? 3 : 1); k++) {
+        uint64_t sum = 0;
+        for (size_t j = 0; j < (size_t)1 << bits; j++)
+          sum = sum * 31 + c[k][j];
+        fprintf(f, " %llx", (unsigned long long)sum);
+      }
+      fputc('\n', f);
     }
   } else if (!strcmp(argv[2], "reals")) {
     /* Float array fields, exactly. */

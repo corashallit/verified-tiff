@@ -146,7 +146,10 @@ encoding/decoding and rational Python conversion are test-only dependencies.
 The optional C API is in `compat/`, an ordinary Rust workspace member and C
 shim, deliberately outside the verified core. Read docs/c-api.md before edits.
 Foreign-pointer/varargs operations belong only there; never move unsafe or
-unverified adapter behavior into the core. Unsupported APIs must report
+unverified adapter behavior into the core. The C is a thin ABI edge that names
+no TIFF tag; TIFF logic belongs in compat/src. compat/abi-audit.json pins its
+source hashes and scripts/audit.py checks them: review each C change and update
+the ledger with it. Unsupported APIs must report
 ENOSYS with a failure sentinel and preserve caller output. Regenerate/audit
 every public header symbol; keep standard symbol versions and private bridge
 symbols hidden. Keep the complete pinned headers and their upstream license.
@@ -274,13 +277,15 @@ scalar elsewhere. Do not claim ARM execution testing from a forced-scalar x86
 build. Record both imported boundaries and current source hashes in evidence.
 
 The adapter proof extension is documented in docs/adapter-proofs.md. Preserve
-all five adapter_* modules and their live production call sites. Keep exact
-schema/count acceptance, integer value preservation, crop placement, window
-source-position conservation, bounded accounting and MaybeUninit output
-initialization. Do not reintroduce C float-to-index casts or a plain byte slice
-of uninitialized caller output. Retain all ten adapter negative gates and the
-Rust/C boundary tests. No end-to-end C proof or ownership/event completeness
-is claimed; keep the residual boundary explicit in evidence and release notes.
+all six adapter_* modules and their live production call sites. Keep exact
+schema/count acceptance, getter and setter C types, caller-array extents,
+integer value preservation, crop placement, index arithmetic, option parsing,
+read extents, window source-position conservation, bounded accounting and
+MaybeUninit output initialization. Do not reintroduce C float-to-index casts or
+a plain byte slice of uninitialized caller output. Retain all 29 gates in
+scripts/reject-adapter.py and the Rust/C boundary tests. No end-to-end C proof
+or ownership/event completeness is claimed; keep the residual boundary explicit
+in evidence and release notes.
 
 The C shim hardening is documented in docs/c-shim-hardening.md. Preserve the
 failure-atomic field registration, channel-specific Lab steps, zero-product

@@ -64,6 +64,7 @@ pub mod adapter_bounds;
 pub mod adapter_geometry;
 pub mod adapter_window;
 pub mod adapter_color;
+pub mod adapter_options;
 
 mod logluv;
 mod logluv_format;

@@ -155,6 +155,17 @@ class Consumers(unittest.TestCase):
    for orientation in [1,4,6]:
     p=self.path/'oriented.tif';p.write_bytes(scene(w=17,h=19,ch=ch,photo=photo,orientation=orientation)[0]);out.append(self.call('rgba-as-stored',p))
    with self.subTest(ch=ch):self.assertEqual(out[0],out[1]);self.assertEqual(out[0],out[2])
+ def test_channel_arrays(self):
+  # Each ColorMap channel and TransferFunction curve has 1 << BitsPerSample
+  # entries: a ColorMap stores three channels and a TransferFunction one curve
+  # or three. libtiff ignores other lengths, and a defaulted TransferFunction
+  # is then its default curve.
+  for bits,ch,alpha in [(4,1,0),(8,1,0),(8,3,0),(8,4,2),(8,2,2),(16,1,0),(16,3,0)]:
+   n=1<<bits
+   for key,count in itertools.product([320,301],[None,n,3*n,n+1,2*n]):
+    extra=[] if count is None else [(key,3,[(i*40503)&0xffff for i in range(count)])]
+    with self.subTest(bits=bits,ch=ch,key=key,count=count):
+     self.dump(scene(w=5,h=3,ch=ch,bits=bits,alpha=alpha,extra=extra)[0],'channels')
  def test_eight_bit_colormaps(self):
   # libtiff treats a map with no entry above 255 as 8-bit and others as 16-bit.
   for bits,scale in itertools.product([2,8],[1,257]):
@@ -234,6 +245,42 @@ class Consumers(unittest.TestCase):
    p.write_bytes(assemble([edit(edit(tags,279,None),325,None)])[0])
    for exe in ['dump','dump-libtiff']:
     self.assertEqual(subprocess.run([str(OUT/exe),str(p),'counts',str(self.path/'out')],capture_output=True).returncode,3)
+ def test_strile_aliases(self):
+  # libtiff reads StripOffsets and TileOffsets as one field, and the two byte
+  # counts as another: either tag holds either layout's values, and the later
+  # entry of a pair replaces the earlier unread. The tile dimensions make an
+  # image tiled.
+  def rename(tags,old,new):return [(new if k==old else k,ty,v) for k,ty,v in tags]
+  def swap(blob,a,b):
+   # Exchange two entries of the first classic directory.
+   out=bytearray(blob);at=struct.unpack_from('<I',out,4)[0]+2
+   i,j=[next(i for i in range(struct.unpack_from('<H',out,at-2)[0]) if struct.unpack_from('<H',out,at+12*i)[0]==k) for k in (a,b)]
+   out[at+12*i:at+12*i+12],out[at+12*j:at+12*j+12]=out[at+12*j:at+12*j+12],out[at+12*i:at+12*i+12]
+   return bytes(out)
+  def fails(blob,readers=('dump','dump-libtiff')):
+   p=self.path/'in.tif';p.write_bytes(blob)
+   for exe in readers:
+    self.assertEqual(subprocess.run([str(OUT/exe),str(p),'striles',str(self.path/'out')],capture_output=True).returncode,3)
+  other={273:324,324:273,279:325,325:279}
+  for tiled in [False,True]:
+   _,native,_,tags,*_=scene(w=17,h=19,tiled=tiled)
+   o,c=(324,325) if tiled else (273,279)
+   for ko,kc in itertools.product([o,other[o]],[c,other[c]]):
+    with self.subTest(tiled=tiled,offsets=ko,counts=kc):
+     blob=assemble([rename(rename(tags,o,ko),c,kc)])[0]
+     self.dump(blob,'striles');self.dump(blob,expected=native)
+   # Values under the tile tags and junk under the strip tags: sorted, the
+   # junk comes first and is ignored; moved after, it fails both readers.
+   for key,junk in [(o,273),(c,279)]:
+    with self.subTest(tiled=tiled,junk=junk):
+     blob=assemble([rename(tags,key,other[junk])+[(junk,2,b'junk')]])[0]
+     self.dump(blob,'striles');self.dump(blob,expected=native)
+     fails(swap(blob,junk,other[junk]))
+  # TIFF 6.0 requires both tile dimensions. When RowsPerStrip comes first,
+  # libtiff takes a missing TileWidth from ImageWidth and a missing
+  # TileLength from RowsPerStrip; the shim rejects the image.
+  for key in [322,323]:
+   with self.subTest(dimension=key):fails(assemble([scene(w=17,h=19)[3]+[(key,4,[16])]])[0],['dump'])
  def test_extra_samples_and_alpha(self):
   # libtiff counts samples beyond the photometric's color channels as
   # unspecified extra samples and rejects ExtraSamples it cannot set. Its RGBA
@@ -298,6 +345,15 @@ class Consumers(unittest.TestCase):
     raw_n=raw[:want*WIDTHS[kind]]
     tags=scene(w=4,h=3,ch=3,photo=6 if key==529 else 2)[3]+[(key,kind,raw_n)]
     with self.subTest(kind=kind,key=key,raw=raw_n.hex()):self.dump(assemble([tags])[0],'reals')
+ def test_field_pointers_outlive_other_changes(self):
+  # libtiff frees only the value of the field being set or unset, so
+  # pointers to other values stay valid. ASan runs also check the reads.
+  import struct
+  fields=[(318,5,struct.pack('<4I',313,1000,329,1000)),(34675,7,b'profile!'),(270,2,b'about\0'),(301,3,list(range(0,65536,256)))]
+  for photo,ch,extra in [(3,1,[(320,3,[(i*257)&0xffff for i in range(768)])]),(2,4,[(338,3,[2])]),(1,1,[])]:
+   for tiled in [False,True]:
+    tags=scene(w=17,h=19,ch=ch,photo=photo,tiled=tiled,extra=fields+extra)[3]
+    with self.subTest(photo=photo,tiled=tiled):self.dump(assemble([tags])[0],'lifetime')
  def test_unknown_tag_counts(self):
   # libtiff counts the NUL it adds to an unterminated ASCII value, and an
   # empty value has no data pointer.

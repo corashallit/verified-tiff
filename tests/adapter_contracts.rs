@@ -44,6 +44,18 @@ fn schemas_do_not_change_argument_shape_with_stored_count(){
     assert!(meta::payload(usize::MAX,0,usize::MAX,12).is_err());
 }
 #[test]
+fn channel_layouts_match_bit_depth_reference(){
+    for bits in 0..=17u16{for stored in [0usize,1,2,3,255,256,257,512,768,769,65536,196608]{for colormap in [false,true]{for (samples,extras) in [(1u16,0u16),(2,1),(3,0),(4,1),(1,2)]{
+        let each=1usize<<bits;let got=meta::channels(colormap,stored,bits,samples,extras);
+        let valid=bits<=16&&(stored==3*each||!colormap&&stored==each);
+        assert_eq!(got.is_ok(),valid,"{colormap} {stored} {bits}");
+        if let Ok(c)=got{
+            assert_eq!((c.parts,c.each,c.stride),(if colormap||samples>extras+1{3}else{1},each,if stored==3*each{each}else{0}));
+            assert!((c.parts-1)*c.stride+c.each<=stored);
+        }
+    }}}}
+}
+#[test]
 fn crops_match_coordinate_reference_and_do_not_touch_padding(){
     for w in 1..9 {for h in 1..9 {for vw in 1..=w {for vh in 1..=h {
         for fx in [false,true]{for fy in [false,true]{for y in 0..vh {for x in 0..vw {for n in 1..=vw-x {
@@ -107,4 +119,44 @@ fn output_commit_initializes_uninitialized_c_storage(){
     bounds::commit_uninit(&[2,3,5,7],&mut out).unwrap();
     for (i,v) in [2,3,5,7].into_iter().enumerate(){assert_eq!(unsafe{out[i].assume_init()},v);}
     assert!(bounds::commit_uninit(&[0;12],&mut out).is_err());
+}
+
+#[test]
+fn strip_and_tile_indexes_match_libtiff_wrapping_arithmetic(){
+    // libtiff numbers tiles and strips in 32-bit arithmetic, which wraps.
+    let mut state=0x9e3779b97f4a7c15u64;
+    let mut next=|cap:u64|{state^=state<<13;state^=state>>7;state^=state<<17;if cap==0{state}else{state%cap}};
+    let edges=[0u32,1,2,3,7,8,255,65535,65536,u32::MAX-1,u32::MAX];
+    for i in 0..20000 {
+        let pick=|n:u64|if i%3==0{edges[(n%edges.len() as u64) as usize]}else{n as u32};
+        let (w,h)=(pick(next(0)),pick(next(0)));let (bw,bh)=(pick(next(0)),pick(next(0)));
+        let (x,y,z)=(pick(next(0)),pick(next(0)),(next(4)==0) as u32);
+        let separate=next(2)==0;let samples=next(5) as u16;let s=next(6) as u16;
+        let valid=x<w&&y<h&&z==0&&(!separate||s<samples);
+        assert_eq!(geometry::check_tile(w,h,separate,samples,x,y,z,s),valid);
+        let tile=geometry::tile_index(w,h,bw,bh,separate,samples,x,y,z,s);
+        assert_eq!(tile.is_ok(),valid&&bw>0&&bh>0);
+        if let Ok(k)=tile{
+            let across=(w-1)/bw+1;let down=(h-1)/bh+1;let plane=if separate{s as u32}else{0};
+            let expect=plane.wrapping_mul(down).wrapping_add(y/bh).wrapping_mul(across).wrapping_add(x/bw);
+            assert_eq!(k,expect);
+        }
+        let rows=if i%5==0{0}else{next(0)%(u32::MAX as u64+2)};let segments=next(0);
+        let strip=geometry::strip_index(h,rows,segments,separate,samples,y,s);
+        assert_eq!(strip.is_ok(),y<h&&(!separate||s<samples)&&rows>0);
+        if let Ok(k)=strip{
+            let per=if separate{segments/samples as u64}else{segments};let plane=if separate{s as u64}else{0};
+            assert_eq!(k,((y as u64/rows) as u32).wrapping_add((plane as u32).wrapping_mul(per as u32)));
+        }
+        let planes=if separate{samples.max(1)}else{1};
+        let per=if rows==0||rows>=h as u64{1}else{(h as u64-1)/rows+1};let n=per*planes as u64;
+        assert_eq!(geometry::strips_from_rows(rows,h,planes),if n>u32::MAX as u64{0}else{n as u32});
+        let k=pick(next(0));
+        let row=geometry::segment_row(k,h,bh);
+        assert_eq!(row.is_ok(),h>0&&bh>0);
+        if let Ok(r)=row{assert!(r<h);assert_eq!(r as u64,(k as u64%((h as u64-1)/bh as u64+1))*bh as u64);}
+        let row=geometry::tile_row(k,w,h,bw,bh);
+        assert_eq!(row.is_ok(),w>0&&h>0&&bw>0&&bh>0);
+        if let Ok(r)=row{let across=(w-1)/bw+1;assert_eq!(r,geometry::segment_row(k/across,h,bh).unwrap());}
+    }
 }
