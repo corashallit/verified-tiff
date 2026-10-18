@@ -7,16 +7,16 @@ impl Handle{
         if !self.writing{return Err((NOTIMPL,"reader is not writable"));}
         let le=self.header.little_endian;
         let sc=|key,d|scalar(&self.data,&self.meta.tags,key,d,le);
-        let width=sc(256,0)?;let height=sc(257,0)?;let ch=sc(277,1)?;let planar=sc(284,1)?;
+        let width=sc(tag::IMAGEWIDTH,0)?;let height=sc(tag::IMAGELENGTH,0)?;let ch=sc(tag::SAMPLESPERPIXEL,1)?;let planar=sc(tag::PLANARCONFIG,1)?;
         if width==0||height==0||width>u32::MAX as u64||height>u32::MAX as u64||ch==0||ch>64||!matches!(planar,1|2){return Err((INVALID,"invalid temporary image geometry"));}
-        let tiled=find(&self.meta.tags,322).is_some()||find(&self.meta.tags,323).is_some();
-        let bw=if tiled{sc(322,0)?}else{width};let bh=if tiled{sc(323,0)?}else{sc(278,height)?.min(height)};
+        let tiled=find(&self.meta.tags,tag::TILEWIDTH).is_some()||find(&self.meta.tags,tag::TILELENGTH).is_some();
+        let bw=if tiled{sc(tag::TILEWIDTH,0)?}else{width};let bh=if tiled{sc(tag::TILELENGTH,0)?}else{sc(tag::ROWSPERSTRIP,height)?.min(height)};
         if bw==0||bh==0||bw>u32::MAX as u64||bh>u32::MAX as u64{return Err((INVALID,"invalid temporary block geometry"));}
         let count=product(product(((width-1)/bw+1) as usize,((height-1)/bh+1) as usize)?,if planar==2{ch as usize}else{1})?;
         if count>self.limits.max_segments{return Err((LIMIT,"temporary segment count"));}
         let kind=if self.header.big{16}else{4};let bytes=product(count,container::field_size(kind))?;
         let zeros=Buf::zeros(bytes,self.limits.max_output,&self.source.mem)?;
-        for tag in if tiled{[324,325]}else{[273,279]}{if find(&self.meta.tags,tag).is_none(){self.put(tag,kind,count,&zeros)?;}}
+        for key in if tiled{[tag::TILEOFFSETS,tag::TILEBYTECOUNTS]}else{[tag::STRIPOFFSETS,tag::STRIPBYTECOUNTS]}{if find(&self.meta.tags,key).is_none(){self.put(key,kind,count,&zeros)?;}}
         // Validate assembled geometry using an independent copy; tag pointers
         // stay valid for every value it leaves unchanged.
         let (data,tags)=self.data.arena(&self.meta.tags,None,0,&self.source.mem)?;

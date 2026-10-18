@@ -61,7 +61,7 @@ fn product(a: usize, b: usize) -> R<usize> {
 }
 mod storage;
 mod stream;
-mod field_tags;
+mod tag;
 mod directory;
 mod decoder;
 mod lerc;
@@ -182,30 +182,36 @@ pub unsafe extern "C" fn vt_scalar(p: *mut c_void, key: u32, defaulted: i32, out
             return Err((INVALID, "null metadata output"));
         }
         let m = &h.meta;
-        let def = match key {
-            258 | 266 | 274 | 277 | 284 | 317 | 339 | 259 | 263 | 332 | 531 => Some(1),
-            296 => Some(2),
-            292 | 293 | 254 | 280 => Some(0),
-            281 => Some((1u64 << m.bits.min(16))-1),
-            334 => Some(4),
-            278 => Some(u32::MAX as u64),
+        let short = u16::try_from(key).ok();
+        let def = match short {
+            Some(tag::BITSPERSAMPLE | tag::FILLORDER | tag::ORIENTATION | tag::SAMPLESPERPIXEL | tag::PLANARCONFIG
+                | tag::PREDICTOR | tag::SAMPLEFORMAT | tag::COMPRESSION | tag::THRESHHOLDING | tag::INKSET
+                | tag::YCBCRPOSITIONING) => Some(1),
+            Some(tag::RESOLUTIONUNIT) => Some(2),
+            Some(tag::GROUP3OPTIONS | tag::GROUP4OPTIONS | tag::SUBFILETYPE | tag::MINSAMPLEVALUE) => Some(0),
+            Some(tag::MAXSAMPLEVALUE) => Some((1u64 << m.bits.min(16))-1),
+            Some(tag::NUMBEROFINKS) => Some(4),
+            Some(tag::ROWSPERSTRIP) => Some(u32::MAX as u64),
             _ => None,
         };
-        let value = if m.compression==34676 && m.photo==32845 && !h.logluv16 && (key==258||key==339){if key==258{32}else{3}} else if key == 65538 {
+        let logluv_native = m.compression==34676 && m.photo==32845 && !h.logluv16;
+        let value = if logluv_native && matches!(short, Some(tag::BITSPERSAMPLE | tag::SAMPLEFORMAT)) {
+            if short == Some(tag::BITSPERSAMPLE) {32} else {3}
+        } else if key == tag::JPEGCOLORMODE {
             h.jpeg_rgb as u64
-        } else if key == 65560 {
+        } else if key == tag::SGILOGDATAFMT {
             if h.logluv16 {
                 1
             } else {
                 0
             }
-        } else if key==278 && m.rows>0 {
+        } else if short==Some(tag::ROWSPERSTRIP) && m.rows>0 {
             if !m.rows_set && defaulted==0 {return Ok(0);}
             m.rows as u64
         } else {
             let Some(t) = find(&m.tags, key as u16) else {
                 // libtiff's directory reader always sets these two.
-                let implied = !h.writing && h.directory_kind == 0 && matches!(key, 259 | 284);
+                let implied = !h.writing && h.directory_kind == 0 && matches!(short, Some(tag::COMPRESSION | tag::PLANARCONFIG));
                 if defaulted != 0 || implied {
                     if let Some(v) = def {
                         *out = v;
@@ -256,16 +262,21 @@ pub unsafe extern "C" fn vt_array(p: *mut c_void, key: u32, len: *mut usize) -> 
         }
         let m = &mut h.meta;
         let set=|k|find(&m.tags,k).is_some();
-        let present=match key{273|324=>set(273)||set(324),279|325=>set(279)||set(325),338=>true,_=>set(key as u16)};
+        let short=u16::try_from(key).ok();
+        let offsets=matches!(short,Some(tag::STRIPOFFSETS|tag::TILEOFFSETS));
+        let counts=matches!(short,Some(tag::STRIPBYTECOUNTS|tag::TILEBYTECOUNTS));
+        let present=if offsets{set(tag::STRIPOFFSETS)||set(tag::TILEOFFSETS)}
+            else if counts{set(tag::STRIPBYTECOUNTS)||set(tag::TILEBYTECOUNTS)}
+            else{short==Some(tag::EXTRASAMPLES)||set(key as u16)};
         if !present{return Ok(ptr::null());}
-        if matches!(key,273|324){m.offsets.materialize(&mut h.source)?;}
-        if matches!(key,279|325){m.counts.materialize(&mut h.source)?;}
-        let (at, n) = match key {
-            273 | 324 => (m.offsets.values.as_ptr().cast(), m.offsets.len()),
-            279 | 325 => (m.counts.values.as_ptr().cast(), m.counts.len()),
-            320 => (m.map.as_ptr().cast(), m.map.len()),
-            338 => (m.extra.as_ptr().cast(), m.extra.len()),
-            330 => (m.subifds.as_ptr().cast(),m.subifds.len()),
+        if offsets{m.offsets.materialize(&mut h.source)?;}
+        if counts{m.counts.materialize(&mut h.source)?;}
+        let (at, n) = match short {
+            _ if offsets => (m.offsets.values.as_ptr().cast(), m.offsets.len()),
+            _ if counts => (m.counts.values.as_ptr().cast(), m.counts.len()),
+            Some(tag::COLORMAP) => (m.map.as_ptr().cast(), m.map.len()),
+            Some(tag::EXTRASAMPLES) => (m.extra.as_ptr().cast(), m.extra.len()),
+            Some(tag::SUBIFD) => (m.subifds.as_ptr().cast(),m.subifds.len()),
             _ => return Err((NOTIMPL, "metadata array not implemented")),
         };
         *len = n;
@@ -330,13 +341,13 @@ pub unsafe extern "C" fn vt_size(p: *mut c_void, kind: u32, rows: u32) -> i64 {
     })
 }
 #[no_mangle]
-pub unsafe extern "C" fn vt_mode(p: *mut c_void, tag: u32, v: i32) -> i32 {
+pub unsafe extern "C" fn vt_mode(p: *mut c_void, key: u32, v: i32) -> i32 {
     guard(0, || {
         let h = handle(p)?;
         h.stream=None;h.cache=None;
-        match tag {
-            65538 if h.meta.photo == 6 && (v == 0 || v == 1) => h.jpeg_rgb = v == 1,
-            65560 if h.meta.photo == 32845 && (v==0||v==1) => h.logluv16 = v==1,
+        match key {
+            tag::JPEGCOLORMODE if h.meta.photo == 6 && (v == 0 || v == 1) => h.jpeg_rgb = v == 1,
+            tag::SGILOGDATAFMT if h.meta.photo == 32845 && (v==0||v==1) => h.logluv16 = v==1,
             _ => return Err((NOTIMPL, "TIFFSetField mutation not implemented")),
         }
         Ok(1)
@@ -393,7 +404,7 @@ pub unsafe extern "C" fn vt_region(p:*mut c_void,x:u32,y:u32,w:u32,ht:u32,source
 #[no_mangle]
 pub unsafe extern "C" fn vt_pair(p:*mut c_void,key:u32,defaulted:i32,out:*mut u16)->i32{
     guard(-1,||{let h=handle(p)?;if out.is_null(){return Err((INVALID,"null pair output"));}
-        let pair=if let Some(t)=find(&h.meta.tags,key as u16){if t.count!=2{return Err((INVALID,"pair field count"));}[u16::try_from(value(&h.data,t,0,h.meta.le)?).map_err(|_|(INVALID,"pair overflow"))?,u16::try_from(value(&h.data,t,1,h.meta.le)?).map_err(|_|(INVALID,"pair overflow"))?]}else if defaulted!=0 && key==530{[2,2]}else{return Ok(0);};
+        let pair=if let Some(t)=find(&h.meta.tags,key as u16){if t.count!=2{return Err((INVALID,"pair field count"));}[u16::try_from(value(&h.data,t,0,h.meta.le)?).map_err(|_|(INVALID,"pair overflow"))?,u16::try_from(value(&h.data,t,1,h.meta.le)?).map_err(|_|(INVALID,"pair overflow"))?]}else if defaulted!=0 && key==u32::from(tag::YCBCRSUBSAMPLING){[2,2]}else{return Ok(0);};
         *out=pair[0];*out.add(1)=pair[1];Ok(1)})
 }
 
@@ -427,7 +438,7 @@ pub unsafe extern "C" fn vt_read_buffer(p:*mut c_void,buffer:*mut u8,n:usize)->i
 #[no_mangle]
 pub unsafe extern "C" fn vt_unset(p:*mut c_void,key:u32)->i32{
     guard(0,||{let h=handle(p)?;
-        if h.directory_kind==0&&key==334&&find(&h.meta.tags,333).is_some(){return Err((INVALID,"NumberOfInks is required by InkNames"));}
+        if h.directory_kind==0&&key==u32::from(tag::NUMBEROFINKS)&&find(&h.meta.tags,tag::INKNAMES).is_some(){return Err((INVALID,"NumberOfInks is required by InkNames"));}
         let mut tags=Buf::new(h.meta.tags.len(),&h.source.mem)?;
         for t in h.meta.tags.iter(){if t.key as u32!=key{tags.push(*t)?;}}
         // Like libtiff, only the unset field's storage is freed.

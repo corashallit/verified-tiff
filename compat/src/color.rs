@@ -28,12 +28,12 @@ impl Handle {
         if x>=right||y>=bottom{return Err((INVALID,"empty RGBA region"));}
         let across=(width-1)/bw+1;let row=m.row_bytes(bw)?;
         let (hs,vs)=if photo==6{self.sampling()?}else{(1,1)};
-        let d50=96.4250f32+100.+82.4680;let defaults=[96.4250/d50,100./d50];let white=if photo==8{self.reals(318,defaults)?}else{defaults};
+        let d50=96.4250f32+100.+82.4680;let defaults=[96.4250/d50,100./d50];let white=if photo==8{self.reals(tag::WHITEPOINT,defaults)?}else{defaults};
         if white[1]<=0.{return Err((INVALID,"white point"));}
         let reference=[white[0]/white[1]*100.,100.,(1.-white[0]-white[1])/white[1]*100.];
         let mut gamma=[0u8;1501];
         if photo==8{for (i,v) in gamma.iter_mut().enumerate(){let q=255.*((i as f64/1500.).powf(1./(2.4f32 as f64)) as f32);*v=(q+0.5).min(255.) as u8;}}
-        let luma=if photo==6{self.reals(529,[0.299,0.587,0.114])?}else{[0.299,0.587,0.114]};let rbw=if photo==6{self.reals(532,[0.,255.,128.,255.,128.,255.])?}else{[0.,255.,128.,255.,128.,255.]};
+        let luma=if photo==6{self.reals(tag::YCBCRCOEFFICIENTS,[0.299,0.587,0.114])?}else{[0.299,0.587,0.114]};let rbw=if photo==6{self.reals(tag::REFERENCEBLACKWHITE,[0.,255.,128.,255.,128.,255.])?}else{[0.,255.,128.,255.,128.,255.]};
         if luma.iter().any(|v|*v<0.||*v>1.)||luma[1]<=0.||rbw.iter().any(|v|*v<0.||*v>255.){return Err((INVALID,"YCbCr conversion coefficients"));}
         let mut out=Buf::zeros(product(product(w,h)?,4)?,self.limits.max_output,&self.source.mem)?;
         let mut budget=Budget{remaining:self.work};if out.len()>budget.remaining{return Err((LIMIT,"RGBA color work limit"));}budget.remaining-=out.len();

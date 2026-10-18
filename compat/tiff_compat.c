@@ -465,8 +465,8 @@ int TIFFIsMSB2LSB(TIFF *t) { return valid(t, __func__) ? 1 : 0; }
 int TIFFIsBigTIFF(TIFF *t) { return (int)info(t, 14); }
 int TIFFIsUpSampled(TIFF *t) {
   uint64_t photo = 0, rgb = 0;
-  return valid(t, __func__) && vt_scalar(t->state, 262, 1, &photo) == 1 &&
-         photo == 6 && vt_scalar(t->state, 65538, 1, &rgb) == 1 && rgb;
+  return valid(t, __func__) && vt_scalar(t->state, TIFFTAG_PHOTOMETRIC, 1, &photo) == 1 &&
+         photo == 6 && vt_scalar(t->state, TIFFTAG_JPEGCOLORMODE, 1, &rgb) == 1 && rgb;
 }
 tdir_t TIFFCurrentDirectory(TIFF *t) { return (tdir_t)info(t, 2); }
 uint64_t TIFFCurrentDirOffset(TIFF *t) { return info(t, 3); }
@@ -522,34 +522,34 @@ static int getfield(TIFF *t, uint32_t tag, va_list ap, int def) {
   uint64_t v = 0;
   int kind = 0;
   switch (tag) {
-  case 254:
-  case 256:
-  case 257:
-  case 278:
-  case 322:
-  case 323:
-  case 292:
-  case 293:
+  case TIFFTAG_SUBFILETYPE:
+  case TIFFTAG_IMAGEWIDTH:
+  case TIFFTAG_IMAGELENGTH:
+  case TIFFTAG_ROWSPERSTRIP:
+  case TIFFTAG_TILEWIDTH:
+  case TIFFTAG_TILELENGTH:
+  case TIFFTAG_GROUP3OPTIONS:
+  case TIFFTAG_GROUP4OPTIONS:
     kind = 32;
     break;
-  case 263:
-  case 264:
-  case 265:
-  case 280:
-  case 281:
-  case 332:
-  case 334:
-  case 531:
-  case 258:
-  case 259:
-  case 262:
-  case 266:
-  case 274:
-  case 277:
-  case 284:
-  case 296:
-  case 317:
-  case 339:
+  case TIFFTAG_THRESHHOLDING:
+  case TIFFTAG_CELLWIDTH:
+  case TIFFTAG_CELLLENGTH:
+  case TIFFTAG_MINSAMPLEVALUE:
+  case TIFFTAG_MAXSAMPLEVALUE:
+  case TIFFTAG_INKSET:
+  case TIFFTAG_NUMBEROFINKS:
+  case TIFFTAG_YCBCRPOSITIONING:
+  case TIFFTAG_BITSPERSAMPLE:
+  case TIFFTAG_COMPRESSION:
+  case TIFFTAG_PHOTOMETRIC:
+  case TIFFTAG_FILLORDER:
+  case TIFFTAG_ORIENTATION:
+  case TIFFTAG_SAMPLESPERPIXEL:
+  case TIFFTAG_PLANARCONFIG:
+  case TIFFTAG_RESOLUTIONUNIT:
+  case TIFFTAG_PREDICTOR:
+  case TIFFTAG_SAMPLEFORMAT:
     kind = 16;
     break;
   case TIFFTAG_JPEGCOLORMODE:
@@ -975,10 +975,10 @@ int TIFFRGBAImageBegin(TIFFRGBAImage *img, TIFF *t, int stop,
   img->req_orientation = 4;
   img->isContig = info(t, 11) == 1;
   img->get = TIFFRGBAImageGet;
-  TIFFGetFieldDefaulted(t, 258, &img->bitspersample);
-  TIFFGetFieldDefaulted(t, 277, &img->samplesperpixel);
+  TIFFGetFieldDefaulted(t, TIFFTAG_BITSPERSAMPLE, &img->bitspersample);
+  TIFFGetFieldDefaulted(t, TIFFTAG_SAMPLESPERPIXEL, &img->samplesperpixel);
   /* Without the tag, libtiff guesses RGB or grayscale from the samples. */
-  if (!TIFFGetField(t, 262, &img->photometric))
+  if (!TIFFGetField(t, TIFFTAG_PHOTOMETRIC, &img->photometric))
     img->photometric = (uint16_t)info(t, 16);
   uint16_t count = 0, *extra = NULL;
   /* An unspecified first extra sample beyond three is associated alpha. */

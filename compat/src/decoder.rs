@@ -123,7 +123,7 @@ impl Handle{
         if self.ycbcr_raw(){self.sampling()?;}
         else if m.photo==6&&!matches!(m.compression,6|7){return Err((NOTIMPL,"RGBA conversion of plain YCbCr samples"));}
         if matches!(m.photo,5|8)&&!matches!(m.bits,8|16){return Err((NOTIMPL,"CMYK/Lab bit depth"));}
-        if m.photo==5&&scalar(&self.data,&m.tags,332,1,m.le)?!=1{return Err((NOTIMPL,"non-CMYK separated inks"));}
+        if m.photo==5&&scalar(&self.data,&m.tags,tag::INKSET,1,m.le)?!=1{return Err((NOTIMPL,"non-CMYK separated inks"));}
         Ok(())
     }
     pub fn rgba(&mut self,x:usize,y:usize,w:usize,h:usize,orientation:usize)->R<()>{
@@ -277,25 +277,27 @@ impl Handle{
         let first_count=self.meta.counts.get(&mut self.source,0)?;
         let m=&self.meta;let rows=m.segment_rows(k)?;
         if m.planar!=1{return Err((NOTIMPL,"special codec planar layout not implemented"));}
-        let jif=scalar(&self.data,&m.tags,513,0,m.le)?;
-        let jlen=scalar(&self.data,&m.tags,514,0,m.le)? as usize;
+        let jif=scalar(&self.data,&m.tags,tag::JPEGIFOFFSET,0,m.le)?;
+        let jlen=scalar(&self.data,&m.tags,tag::JPEGIFBYTECOUNT,0,m.le)? as usize;
         let cap=self.data.len().checked_add(encoded.len()).and_then(|n|n.checked_add(jlen)).and_then(|n|n.checked_add(8192)).ok_or((LIMIT,"segment container overflow"))?;
         let mut b=Builder::new(cap,&self.source.mem,m.le)?;
-        b.number(256,4,m.bw as u32)?;b.number(257,4,rows as u32)?;
-        b.repeated(258,m.bits as u16,m.ch)?;b.number(259,3,m.compression as u32)?;
-        b.number(262,3,m.photo as u32)?;b.number(266,3,m.fill as u32)?;
-        b.number(274,3,1)?;b.number(277,3,m.ch as u32)?;b.number(278,4,rows as u32)?;
-        b.number(284,3,1)?;b.number(317,3,m.predictor as u32)?;
-        b.repeated(339,m.format,m.ch)?;
+        b.number(tag::IMAGEWIDTH,4,m.bw as u32)?;b.number(tag::IMAGELENGTH,4,rows as u32)?;
+        b.repeated(tag::BITSPERSAMPLE,m.bits as u16,m.ch)?;b.number(tag::COMPRESSION,3,m.compression as u32)?;
+        b.number(tag::PHOTOMETRIC,3,m.photo as u32)?;b.number(tag::FILLORDER,3,m.fill as u32)?;
+        b.number(tag::ORIENTATION,3,1)?;b.number(tag::SAMPLESPERPIXEL,3,m.ch as u32)?;b.number(tag::ROWSPERSTRIP,4,rows as u32)?;
+        b.number(tag::PLANARCONFIG,3,1)?;b.number(tag::PREDICTOR,3,m.predictor as u32)?;
+        b.repeated(tag::SAMPLEFORMAT,m.format,m.ch)?;
         // WebP's output already carries the stored components. Suppress the
         // old raster API's lossy unassociation; the caller owns alpha meaning.
-        if let Some(t)=find(&m.tags,338).filter(|t|t.count>0){if m.compression==50001 && t.count==1{b.number(338,3,2)?;}else{b.raw_tag(&self.data,t)?;}}
-        for key in [292,293,347,512,515,529,530,531,532]{if key==515 && jif!=0{continue;}if let Some(t)=find(&m.tags,key){b.raw_tag(&self.data,t)?;}}
-        for key in [519,520,521]{if jif!=0{continue;}if let Some(t)=find(&m.tags,key){
+        if let Some(t)=find(&m.tags,tag::EXTRASAMPLES).filter(|t|t.count>0){if m.compression==50001 && t.count==1{b.number(tag::EXTRASAMPLES,3,2)?;}else{b.raw_tag(&self.data,t)?;}}
+        for key in [tag::GROUP3OPTIONS,tag::GROUP4OPTIONS,tag::JPEGTABLES,tag::JPEGPROC,tag::JPEGRESTARTINTERVAL,
+            tag::YCBCRCOEFFICIENTS,tag::YCBCRSUBSAMPLING,tag::YCBCRPOSITIONING,tag::REFERENCEBLACKWHITE]{
+            if key==tag::JPEGRESTARTINTERVAL && jif!=0{continue;}if let Some(t)=find(&m.tags,key){b.raw_tag(&self.data,t)?;}}
+        for key in [tag::JPEGQTABLES,tag::JPEGDCTABLES,tag::JPEGACTABLES]{if jif!=0{continue;}if let Some(t)=find(&m.tags,key){
             if t.count>3{return Err((INVALID,"OJPEG table count"));}let mut offsets=[0u32;3];
             for i in 0..t.count{
                 let at=value(&self.data,t,i,m.le)?;
-                let n=if key==519{64}else{let counts=self.source.read(at,16)?;16+counts.iter().map(|v|*v as usize).sum::<usize>()};
+                let n=if key==tag::JPEGQTABLES{64}else{let counts=self.source.read(at,16)?;16+counts.iter().map(|v|*v as usize).sum::<usize>()};
                 if n>272{return Err((INVALID,"OJPEG Huffman table size"));}
                 let raw=self.source.read(at,n)?;offsets[i]=b.append(&raw)?;
             }
@@ -317,21 +319,21 @@ impl Handle{
             }
             let v=native::jpeg_shared(&shared,budget).map_err(err)?;
             if v[12]!=m.bw || v[13]!=m.height || v[14]!=m.ch{return Err((INVALID,"OJPEG shared frame geometry"));}
-            let sub=find(&m.tags,530);let hs=if let Some(t)=sub{value(&self.data,t,0,m.le)? as usize}else{2};let vs=if let Some(t)=sub{value(&self.data,t,1,m.le)? as usize}else{2};
+            let sub=find(&m.tags,tag::YCBCRSUBSAMPLING);let hs=if let Some(t)=sub{value(&self.data,t,0,m.le)? as usize}else{2};let vs=if let Some(t)=sub{value(&self.data,t,1,m.le)? as usize}else{2};
             if m.photo==6 && (v[15]!=hs || v[16]!=vs){return Err((INVALID,"OJPEG shared sampling"));}
-            for (key,selectors,base) in [(519,20,0),(520,23,4),(521,26,8)]{
+            for (key,selectors,base) in [(tag::JPEGQTABLES,20,0),(tag::JPEGDCTABLES,23,4),(tag::JPEGACTABLES,26,8)]{
                 let mut offsets=[0u32;3];
                 if m.ch>3{return Err((INVALID,"OJPEG component count"));}
                 for c in 0..m.ch{
                     let selector=v[selectors+c];if selector>=4{return Err((INVALID,"OJPEG table selector"));}
                     let at=v[base+selector];
-                    let n=if key==519{64}else{let counts=shared.get(at..at.checked_add(16).ok_or((LIMIT,"OJPEG table range"))?).ok_or((INVALID,"OJPEG table range"))?;16+counts.iter().map(|x|*x as usize).sum::<usize>()};
+                    let n=if key==tag::JPEGQTABLES{64}else{let counts=shared.get(at..at.checked_add(16).ok_or((LIMIT,"OJPEG table range"))?).ok_or((INVALID,"OJPEG table range"))?;16+counts.iter().map(|x|*x as usize).sum::<usize>()};
                     let table=shared.get(at..at.checked_add(n).ok_or((LIMIT,"OJPEG table range"))?).ok_or((INVALID,"OJPEG table range"))?;
                     offsets[c]=b.append(table)?;
                 }
                 b.longs(key,&offsets[..m.ch])?;
             }
-            b.number(515,3,v[29] as u32)?;
+            b.number(tag::JPEGRESTARTINTERVAL,3,v[29] as u32)?;
             if encoded.len()>=2 && encoded[..2]==[255,218]{
                 let mut copy=Buf::new(encoded.len(),&self.source.mem)?;copy.extend(encoded)?;
                 let mut ids=[0u8;3];let mut selectors=[0u8;3];
@@ -340,7 +342,7 @@ impl Handle{
                 renamed=Some(copy);
             }
         }
-        let at=b.append(renamed.as_ref().map_or(encoded,|s|&**s))?;b.number(273,4,at)?;b.number(279,4,u32::try_from(encoded.len()).map_err(|_|(LIMIT,"special segment length"))?)?;
+        let at=b.append(renamed.as_ref().map_or(encoded,|s|&**s))?;b.number(tag::STRIPOFFSETS,4,at)?;b.number(tag::STRIPBYTECOUNTS,4,u32::try_from(encoded.len()).map_err(|_|(LIMIT,"special segment length"))?)?;
         b.finish()
     }
 }

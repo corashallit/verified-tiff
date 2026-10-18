@@ -63,10 +63,10 @@ void TIFFPrintDirectory(TIFF *t,FILE *file,long flags){
   for(size_t i=0;i<count;i++){
     uint32_t tag=vt_tag(t->state,i);const TIFFField *field=resolve_field(t,tag);
     if(!field)continue;
-    if(tag==273||tag==279||tag==324||tag==325){
+    if(tag==TIFFTAG_STRIPOFFSETS||tag==TIFFTAG_STRIPBYTECOUNTS||tag==TIFFTAG_TILEOFFSETS||tag==TIFFTAG_TILEBYTECOUNTS){
       if(!(flags&TIFFPRINT_STRIPS))continue;
       fprintf(file,"  %s:",field->name);
-      for(uint32_t k=0;k<info(t,7);k++)fprintf(file," %llu",(unsigned long long)strile(t,k,tag==279||tag==325,NULL));
+      for(uint32_t k=0;k<info(t,7);k++)fprintf(file," %llu",(unsigned long long)strile(t,k,tag==TIFFTAG_STRIPBYTECOUNTS||tag==TIFFTAG_TILEBYTECOUNTS,NULL));
       fputc('\n',file);continue;
     }
     const uint8_t *value=NULL;size_t n=0;

@@ -24,10 +24,10 @@ impl Handle{
     pub fn put(&mut self,key:u16,kind:u16,count:usize,raw:&[u8])->R<()>{
         let w=container::field_size(kind);
         if w==0||raw.len()!=product(count,w)?{return Err((INVALID,"field storage size"));}
-        if self.directory_kind==0&&key==334{
+        if self.directory_kind==0&&key==tag::NUMBEROFINKS{
             let candidate=Tag{key,kind,count,at:0,slot:0,remote:None};
             if count!=1||value(raw,candidate,0,self.meta.le)?>65535{return Err((INVALID,"invalid NumberOfInks"));}
-            if let Some(names)=find(&self.meta.tags,333){
+            if let Some(names)=find(&self.meta.tags,tag::INKNAMES){
                 let s=self.data.bytes(&names);let len=checked::payload(s.len(),names.at,names.count,names.kind).map_err(err)?;
                 let actual=checked::ink_names(&s[names.at..names.at+len]).map_err(err)?;
                 if value(raw,candidate,0,self.meta.le)?!=actual as u64{return Err((INVALID,"NumberOfInks disagrees with InkNames"));}
@@ -80,11 +80,11 @@ impl Handle{
     /// libtiff's default TransferFunction curve of `n` entries. Like a stored
     /// value, it stays until the directory changes or the field is set.
     fn default_transfer(&mut self,n:usize)->R<(*const u8,usize)>{
-        if let Some(v)=self.converted.iter().find(|v|v.key==301&&v.kind==0&&v.n==n){return Ok((v.data.as_ptr().cast(),n));}
+        if let Some(v)=self.converted.iter().find(|v|v.key==u32::from(tag::TRANSFERFUNCTION)&&v.kind==0&&v.n==n){return Ok((v.data.as_ptr().cast(),n));}
         let mut data=native(n,2,0,&self.source.mem)?;
         for i in 1..n{set_native(&mut data,i,2,(65535.*(i as f64/(n as f64-1.)).powf(2.2)+0.5).floor() as u64);}
         let ptr=data.as_ptr().cast();self.converted.reserve(self.converted.len()+1)?;
-        self.converted.push(Converted{key:301,kind:0,n,data})?;Ok((ptr,n))
+        self.converted.push(Converted{key:tag::TRANSFERFUNCTION.into(),kind:0,n,data})?;Ok((ptr,n))
     }
 }
 /// Zeroed u64-aligned storage for `n` native values of `w` bytes and `extra`
@@ -107,7 +107,7 @@ fn set_native(data:&mut [u64],i:usize,w:usize,value:u64){
 pub unsafe extern "C" fn vt_channels(p:*mut c_void,key:u32,defaulted:i32,bits:u16,samples:u16,extras:u16,out:*mut *const u16,parts:*mut usize)->i32{
     guard(-1,||{
         let h=handle(p)?;if out.is_null()||parts.is_null(){return Err((INVALID,"null channel output"));}
-        let colormap=match key{320=>true,301=>false,_=>return Err((INVALID,"not a channel array"))};
+        let colormap=match u16::try_from(key){Ok(tag::COLORMAP)=>true,Ok(tag::TRANSFERFUNCTION)=>false,_=>return Err((INVALID,"not a channel array"))};
         let layout=|n:usize|checked::channels(colormap,n,bits,samples,extras).ok();
         let (base,n)=match h.typed(key,3)?{
             Some((base,n)) if layout(n).is_some()=>(base,n),
@@ -125,7 +125,9 @@ pub unsafe extern "C" fn vt_put(p:*mut c_void,key:u32,kind:u16,count:usize,input
     guard(0,||{let h=handle(p)?;let key=u16::try_from(key).map_err(|_|(INVALID,"tag overflow"))?;
         let w=container::field_size(kind);let len=product(count,w)?;
         if w==0||len>isize::MAX as usize||(len>0&&input.is_null()){return Err((INVALID,"invalid field input"));}
-        if !h.writing&&h.directory_kind==0&&matches!(key,256|257|258|259|277|278|284|317|322|323|273|279|324|325){return Err((NOTIMPL,"read handle geometry mutation not implemented"));}
+        if !h.writing&&h.directory_kind==0&&matches!(key,tag::IMAGEWIDTH|tag::IMAGELENGTH|tag::BITSPERSAMPLE|tag::COMPRESSION
+            |tag::SAMPLESPERPIXEL|tag::ROWSPERSTRIP|tag::PLANARCONFIG|tag::PREDICTOR|tag::TILEWIDTH|tag::TILELENGTH
+            |tag::STRIPOFFSETS|tag::STRIPBYTECOUNTS|tag::TILEOFFSETS|tag::TILEBYTECOUNTS){return Err((NOTIMPL,"read handle geometry mutation not implemented"));}
         let mut raw=Buf::zeros(len,h.limits.max_input,&h.source.mem)?;
         if len>0{raw.copy_from_slice(std::slice::from_raw_parts(input,len));}
         if h.meta.le!=cfg!(target_endian="little") {let stride=if kind==5||kind==10{4}else{w};for word in raw.chunks_exact_mut(stride){word.reverse();}}

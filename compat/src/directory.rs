@@ -9,7 +9,7 @@ pub fn find(tags:&[Tag],key:u16)->Option<Tag>{tags.iter().find(|t|t.key==key).co
 /// The tag holding the strile offsets, or the byte counts: the one of the
 /// strip and tile pair that is set, and when both are, the one the layout uses.
 pub fn strile_key(tags:&[Tag],tiled:bool,counts:bool)->u16{
-    let (strip,tile)=if counts{(279,325)}else{(273,324)};
+    let (strip,tile)=if counts{(tag::STRIPBYTECOUNTS,tag::TILEBYTECOUNTS)}else{(tag::STRIPOFFSETS,tag::TILEOFFSETS)};
     match (find(tags,strip).is_some(),find(tags,tile).is_some()){(true,false)=>strip,(false,true)=>tile,_=>if tiled{tile}else{strip}}
 }
 pub fn value<S:Values+?Sized>(s:&S,t:Tag,i:usize,le:bool)->R<u64>{
@@ -72,7 +72,7 @@ pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer
         let e=ct::entry(&records[i*ew..i*ew+ew],at,header.big,le,source.len).map_err(err)?;
         if entries.iter().any(|t:&ct::Entry|t.tag==e.tag){return Err((INVALID,"duplicate directory tag"));}
         let len=usize::try_from(e.length).map_err(|_|(LIMIT,"metadata size overflow"))?;
-        total=total.checked_add(if defer&&matches!(e.tag,273|279|324|325)&&e.count>1{0}else{len}).and_then(|v|v.checked_add(1)).ok_or((LIMIT,"metadata size overflow"))?;
+        total=total.checked_add(if defer&&matches!(e.tag,tag::STRIPOFFSETS|tag::STRIPBYTECOUNTS|tag::TILEOFFSETS|tag::TILEBYTECOUNTS)&&e.count>1{0}else{len}).and_then(|v|v.checked_add(1)).ok_or((LIMIT,"metadata size overflow"))?;
         if total>l.max_input{return Err((LIMIT,"metadata byte limit"));}
         if e.length>slot{space=space.and_then(|v|v.checked_add(e.length));}
         entries.push(e)?;
@@ -80,7 +80,7 @@ pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer
     let mut data=Buf::new(total,&mem)?;let mut tags=Buf::new(entries.len(),&mem)?;
     for e in entries.iter(){
         let at=data.len();
-        if defer&&matches!(e.tag,273|279|324|325)&&e.count>1{
+        if defer&&matches!(e.tag,tag::STRIPOFFSETS|tag::STRIPBYTECOUNTS|tag::TILEOFFSETS|tag::TILEBYTECOUNTS)&&e.count>1{
             tags.push(Tag{key:e.tag,kind:e.kind,count:e.count as usize,at:0,slot:0,remote:Some(e.offset)})?;continue;
         }
         let raw=source.read(e.offset,e.length as usize)?;
@@ -88,10 +88,10 @@ pub fn raw_metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,defer
         // InkNames keeps its exact payload. The estimate counts the NUL only
         // for an anonymous value or InkNames (tif_dirread.c, TIFFFetchNormalTag).
         let unterminated=e.kind==2&&raw.last().is_some_and(|v|*v!=0);
-        if unterminated&&(e.tag==333&&e.count<=65535||field_tags::KNOWN.binary_search(&e.tag).is_err()){
+        if unterminated&&(e.tag==tag::INKNAMES&&e.count<=65535||tag::KNOWN.binary_search(&e.tag).is_err()){
             let out=|n:u64|if n>slot{n}else{0};space=space.and_then(|v|(v-out(e.length)).checked_add(out(e.length+1)));
         }
-        let count=e.count as usize+usize::from(unterminated&&e.tag!=333);
+        let count=e.count as usize+usize::from(unterminated&&e.tag!=tag::INKNAMES);
         data.extend(&raw)?;data.push(0)?; // ASCII getters are always terminated.
         tags.push(Tag{key:e.tag,kind:e.kind,count,at,slot:0,remote:None})?;
     }
@@ -103,7 +103,7 @@ pub fn metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,chop:bool
     // Like libtiff, StripOffsets and TileOffsets are one field, as are the two
     // byte counts, and the later entry of a pair replaces the earlier
     // unread (tif_dirread.c, TIFFReadDirectory).
-    for (strip,tile) in [(273,324),(279,325)]{
+    for (strip,tile) in [(tag::STRIPOFFSETS,tag::TILEOFFSETS),(tag::STRIPBYTECOUNTS,tag::TILEBYTECOUNTS)]{
         let at=|k|tags.iter().position(|t:&Tag|t.key==k);
         if let (Some(a),Some(b))=(at(strip),at(tile)){let gone=if a<b{strip}else{tile};tags.retain(|t|t.key!=gone);}
     }
@@ -113,8 +113,8 @@ pub fn metadata(source:&mut Source,header:ct::Header,off:u64,l:&Limits,chop:bool
 /// extra storage terminator, and publish its actual count as NumberOfInks.
 /// Called only on candidate buffers, before a handle's state is replaced.
 pub fn normalize_inks(data:&mut Buf<u8>,tags:&mut Buf<Tag>,le:bool,l:&Limits)->R<()>{
-    let existing=tags.iter().position(|t|t.key==334);
-    let Some(names)=find(tags,333)else{
+    let existing=tags.iter().position(|t|t.key==tag::NUMBEROFINKS);
+    let Some(names)=find(tags,tag::INKNAMES)else{
         if let Some(i)=existing{let t=tags[i];if t.count!=1||value(data,t,0,le)?>65535{return Err((INVALID,"invalid NumberOfInks"));}}
         return Ok(());
     };
@@ -125,7 +125,7 @@ pub fn normalize_inks(data:&mut Buf<u8>,tags:&mut Buf<Tag>,le:bool,l:&Limits)->R
         let t=tags[i];
         if t.kind==3&&t.count==1&&value(data,t,0,le)?==count as u64{return Ok(());}
     }
-    set_ints(data,tags,334,3,&[count as u64],le,l)
+    set_ints(data,tags,tag::NUMBEROFINKS,3,&[count as u64],le,l)
 }
 /// Replace or insert a SHORT or LONG8 field in candidate storage.
 fn set_ints(data:&mut Buf<u8>,tags:&mut Buf<Tag>,key:u16,kind:u16,v:&[u64],le:bool,l:&Limits)->R<()>{
@@ -149,7 +149,7 @@ fn set_ints(data:&mut Buf<u8>,tags:&mut Buf<Tag>,key:u16,kind:u16,v:&[u64],le:bo
 /// (tif_dir.c setExtraSamples, tif_dirread.c _TIFFGetMaxColorChannels).
 /// The stored field keeps its bytes.
 fn read_extras(data:&[u8],tags:&[Tag],ch:usize,photo:u64,le:bool,mem:&Mem)->R<Buf<u16>>{
-    let t=find(tags,338);let n=t.map_or(0,|t|t.count);
+    let t=find(tags,tag::EXTRASAMPLES);let n=t.map_or(0,|t|t.count);
     if n>ch{return Err((INVALID,"ExtraSamples count"));}
     let colors=match photo{0|1|3=>1,2|6|8|9|10|32845=>3,4|5=>4,_=>0};
     let total=if colors>0&&ch-n>colors{ch-colors}else{n};
@@ -165,39 +165,40 @@ fn read_extras(data:&[u8],tags:&[Tag],ch:usize,photo:u64,le:bool,mem:&Mem)->R<Bu
 /// opposed to storage rebuilt after a field change.
 pub fn assemble(mut data:Buf<u8>,mut tags:Buf<Tag>,off:u64,next:u64,le:bool,l:&Limits,chop:bool,mem:&Mem,read:bool,repair:Option<(&mut Source,Option<u64>,bool)>)->R<(Buf<u8>,Meta)>{
     normalize_inks(&mut data,&mut tags,le,l)?;
-    for key in [256,257,259,262,266,274,277,278,284,317,322,323]{
+    for key in [tag::IMAGEWIDTH,tag::IMAGELENGTH,tag::COMPRESSION,tag::PHOTOMETRIC,tag::FILLORDER,tag::ORIENTATION,
+        tag::SAMPLESPERPIXEL,tag::ROWSPERSTRIP,tag::PLANARCONFIG,tag::PREDICTOR,tag::TILEWIDTH,tag::TILELENGTH]{
         if find(&tags,key).is_some_and(|t|t.count!=1){return Err((INVALID,"scalar image field count"));}
     }
     let sc=|key,default|scalar(&data,&tags,key,default,le);
-    let width=sc(256,0)? as usize;let height=sc(257,0)? as usize;
-    let ch=sc(277,1)? as usize;let bits=sc(258,1)? as usize;let format=u16::try_from(sc(339,1)?).map_err(|_|(INVALID,"SampleFormat overflow"))?;
-    let compression=u16::try_from(sc(259,1)?).map_err(|_|(INVALID,"Compression overflow"))?;let predictor=u16::try_from(sc(317,1)?).map_err(|_|(INVALID,"Predictor overflow"))?;
-    let extra=if read{read_extras(&data,&tags,ch,sc(262,0)?,le,mem)?}else{small_array(&data,&tags,338,le,ch,mem)?};
+    let width=sc(tag::IMAGEWIDTH,0)? as usize;let height=sc(tag::IMAGELENGTH,0)? as usize;
+    let ch=sc(tag::SAMPLESPERPIXEL,1)? as usize;let bits=sc(tag::BITSPERSAMPLE,1)? as usize;let format=u16::try_from(sc(tag::SAMPLEFORMAT,1)?).map_err(|_|(INVALID,"SampleFormat overflow"))?;
+    let compression=u16::try_from(sc(tag::COMPRESSION,1)?).map_err(|_|(INVALID,"Compression overflow"))?;let predictor=u16::try_from(sc(tag::PREDICTOR,1)?).map_err(|_|(INVALID,"Predictor overflow"))?;
+    let extra=if read{read_extras(&data,&tags,ch,sc(tag::PHOTOMETRIC,0)?,le,mem)?}else{small_array(&data,&tags,tag::EXTRASAMPLES,le,ch,mem)?};
     // Without a Photometric tag, libtiff's RGBA reader picks RGB or grayscale
     // from the samples that are not extra samples.
     let colors=ch-extra.len();
-    let photo=sc(262,if colors==3{2}else if matches!(compression,2|3|4|32771){0}else{1})?;let planar=sc(284,1)? as usize;
-    let orientation=sc(274,1)? as usize;let fill=u16::try_from(sc(266,1)?).map_err(|_|(INVALID,"FillOrder overflow"))?;
+    let photo=sc(tag::PHOTOMETRIC,if colors==3{2}else if matches!(compression,2|3|4|32771){0}else{1})?;let planar=sc(tag::PLANARCONFIG,1)? as usize;
+    let orientation=sc(tag::ORIENTATION,1)? as usize;let fill=u16::try_from(sc(tag::FILLORDER,1)?).map_err(|_|(INVALID,"FillOrder overflow"))?;
     if width==0 || height==0 || width>u32::MAX as usize || height>u32::MAX as usize || ch==0 || ch>64 || bits==0 || bits>128 || (bits>64 && !matches!(format,5|6)) || !(1..=2).contains(&planar) || !(1..=8).contains(&orientation) || !(1..=2).contains(&fill){return Err((INVALID,"invalid image geometry/sample layout"));}
-    for key in [258,339]{if let Some(t)=find(&tags,key){if t.count!=1 && t.count!=ch{return Err((INVALID,"per-sample metadata count"));}for i in 1..t.count{if value(&data,t,i,le)?!=value(&data,t,0,le)?{return Err((NOTIMPL,"mixed sample widths/formats"));}}}}
+    for key in [tag::BITSPERSAMPLE,tag::SAMPLEFORMAT]{if let Some(t)=find(&tags,key){if t.count!=1 && t.count!=ch{return Err((INVALID,"per-sample metadata count"));}for i in 1..t.count{if value(&data,t,i,le)?!=value(&data,t,0,le)?{return Err((NOTIMPL,"mixed sample widths/formats"));}}}}
     // Like libtiff, the tile dimensions make an image tiled.
-    let tiled=find(&tags,322).is_some()||find(&tags,323).is_some();let rows=sc(278,u32::MAX as u64)? as usize;
-    let bw=if tiled{sc(322,0)? as usize}else{width};let bh=if tiled{sc(323,0)? as usize}else{rows.min(height)};
+    let tiled=find(&tags,tag::TILEWIDTH).is_some()||find(&tags,tag::TILELENGTH).is_some();let rows=sc(tag::ROWSPERSTRIP,u32::MAX as u64)? as usize;
+    let bw=if tiled{sc(tag::TILEWIDTH,0)? as usize}else{width};let bh=if tiled{sc(tag::TILELENGTH,0)? as usize}else{rows.min(height)};
     // libtiff rejects a RowsPerStrip of 0 even on tiled images.
     if rows==0 || bw==0 || bh==0 || bw>u32::MAX as usize || bh>u32::MAX as usize{return Err((INVALID,"invalid strip/tile geometry"));}
     let (_,_,_,count)=geometry::grid(width,height,bw,bh,if planar==2{ch}else{1},l.max_segments).map_err(err)?;
     let offsets=Striles::new(&data,&tags,strile_key(&tags,tiled,false),le,l.max_segments,mem)?;
     let counts=Striles::new(&data,&tags,strile_key(&tags,tiled,true),le,l.max_segments,mem)?;
     // Pixel ranges and streams are deliberately checked only when requested.
-    let map=small_array(&data,&tags,320,le,3*65536,&mem)?;
-    let subifds=array(&data,&tags,330,le,l.max_directories,&mem)?;
+    let map=small_array(&data,&tags,tag::COLORMAP,le,3*65536,&mem)?;
+    let subifds=array(&data,&tags,tag::SUBIFD,le,l.max_directories,&mem)?;
     // Like libtiff, a palette image needs 1 << BitsPerSample ColorMap entries
     // per channel. From 8 bits up it reads as gray or RGB without them.
     let photo=if photo==3&&!(bits<=16&&map.len()==3usize<<bits){
         if bits<8{return Err((INVALID,"palette image without a usable ColorMap"));}
-        let fixed=if ch==3{2}else{1};set_ints(&mut data,&mut tags,262,3,&[fixed],le,l)?;fixed
+        let fixed=if ch==3{2}else{1};set_ints(&mut data,&mut tags,tag::PHOTOMETRIC,3,&[fixed],le,l)?;fixed
     }else{photo};
-    let rows_set=find(&tags,278).is_some();
+    let rows_set=find(&tags,tag::ROWSPERSTRIP).is_some();
     let mut m=Meta{tags,off,next,le,width,height,ch,bits,format,photo,planar,rows,bw,bh,tiled,tile_rows:rows,rows_set,offsets,counts,map,extra,subifds,compression,predictor,orientation,fill};
     if let Some((source,space,deferred))=repair{
         if let Some(v)=m.estimated_counts(&data,source,space,deferred,count)?{
@@ -282,7 +283,7 @@ impl Meta{
     /// YCbCrSubsampling as libtiff reads it: a pair it cannot read is
     /// ignored in favour of the default.
     pub fn subsampling<S:Values+?Sized>(&self,data:&S)->R<(u64,u64)>{
-        let pair=match find(&self.tags,530){Some(t) if t.count==2=>(value(data,t,0,self.le)?,value(data,t,1,self.le)?),_=>(2,2)};
+        let pair=match find(&self.tags,tag::YCBCRSUBSAMPLING){Some(t) if t.count==2=>(value(data,t,0,self.le)?,value(data,t,1,self.le)?),_=>(2,2)};
         Ok(if pair.0>0xffff||pair.1>0xffff{(2,2)}else{pair})
     }
     /// libtiff's TIFFScanlineSize64 (`rows` None) or TIFFVTileSize64 for a
