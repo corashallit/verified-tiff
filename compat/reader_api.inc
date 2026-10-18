@@ -60,7 +60,7 @@ void TIFFPrintDirectory(TIFF *t,FILE *file,long flags){
   fprintf(file,"TIFF Directory at offset 0x%llx (%llu)\n",(unsigned long long)TIFFCurrentDirOffset(t),(unsigned long long)TIFFCurrentDirOffset(t));
   size_t count=info(t,15);
   for(size_t i=0;i<count;i++){
-    uint32_t tag=vt_tag(t->state,i);const TIFFField *field=resolve_field(t,tag);
+    uint32_t tag=vt_tag(t->state,i);const TIFFField *field=find_field(t,tag,TIFF_ANY,1,__func__);
     if(!field)continue;
     if(tag==TIFFTAG_STRIPOFFSETS||tag==TIFFTAG_STRIPBYTECOUNTS||tag==TIFFTAG_TILEOFFSETS||tag==TIFFTAG_TILEBYTECOUNTS){
       if(!(flags&TIFFPRINT_STRIPS))continue;
@@ -92,33 +92,11 @@ void TIFFPrintDirectory(TIFF *t,FILE *file,long flags){
   if(t->methods.printdir)t->methods.printdir(t,file,flags);
 }
 /* TIFFFieldArray is opaque in tiffio.h. Programs supplying it use the pinned
- * libtiff internal ABI. Decode that layout without exposing our own fields. */
-struct vt_import_field {uint32_t tag;short read_count,write_count;TIFFDataType type;uint32_t anonymous;int get_type;unsigned short bit;unsigned char change,pass;char *name;const TIFFFieldArray *children;};
-struct vt_import_array {int type;uint32_t allocated,count;const struct vt_import_field *fields;};
+ * libtiff internal ABI, which compat/src/fields.rs decodes. */
 int TIFFReadCustomDirectory(TIFF *t,toff_t off,const TIFFFieldArray *array){
   if(!valid(t,__func__))return 0;
-  struct vt_import_array a={0};if(array)memcpy(&a,array,sizeof(a));
-  if(a.count>4096||(a.count&&!a.fields)){fail(t,EINVAL,__func__,"invalid custom field array");return 0;}
-  unsigned prior=t->directory_kind;t->directory_kind=3;
-  struct vt_field_node *head=t->fields;
-  for(uint32_t i=0;i<a.count;i++){
-    struct vt_import_field f;memcpy(&f,a.fields+i,sizeof(f));
-    int code=f.get_type;
-    if(!f.name||f.tag>65535||code<1||code>50||code==14){fail(t,EINVAL,__func__,"unsupported custom field convention");goto fail;}
-    int cs=code>=39?4:code>=27?2:0;
-    int base=code>=39?code-38:code>=27?code-26:code>=15?code-14:code;
-    static const TIFFDataType types[]={TIFF_NOTYPE,TIFF_ASCII,TIFF_BYTE,TIFF_SBYTE,TIFF_SHORT,TIFF_SSHORT,TIFF_LONG,TIFF_SLONG,TIFF_LONG8,TIFF_SLONG8,TIFF_FLOAT,TIFF_DOUBLE,TIFF_IFD8,TIFF_SLONG};
-    TIFFDataType kind=types[base];int size=TIFFDataWidth(kind);
-    TIFFField v={f.tag,f.type,f.read_count,f.write_count,f.pass,size,cs,1,f.name,kind,code>=15||kind==TIFF_ASCII,(int)f.anonymous};
-    if(!add_field(t,v))goto fail;
-  }
-  if(!vt_custom_dir(t->state,off,3)){bridge_fail(t,__func__);goto fail;}
-  struct vt_field_node **link=&t->fields;int old=0;
-  while(*link){struct vt_field_node *p=*link;if(p==head)old=1;if(old&&p->dir==3){*link=p->next;t->field_count--;vt_mem_release(t->state,p->charge);free(p);}else link=&p->next;}
-  return 1;
-fail:
-  while(t->fields!=head){struct vt_field_node *p=t->fields;t->fields=p->next;t->field_count--;vt_mem_release(t->state,p->charge);free(p);}
-  t->directory_kind=prior;return 0;
+  if(!vt_read_custom_directory(t->state,off,array)){bridge_fail(t,__func__);return 0;}
+  t->directory_kind=3;return 1;
 }
 
 int TIFFSetFileno(TIFF *t,int fd){if(!valid(t,__func__))return -1;int old=t->fd;t->fd=fd;return old;}

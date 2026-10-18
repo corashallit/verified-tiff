@@ -97,6 +97,10 @@ int __real_vt_custom_dir(void*,uint64_t,uint32_t);
 int __wrap_vt_custom_dir(void*p,uint64_t o,uint32_t k){return injecting("vt_custom_dir",0)?fault_rc:__real_vt_custom_dir(p,o,k);}
 const uint8_t *__real_vt_directory_bytes(void*,size_t*);
 const uint8_t *__wrap_vt_directory_bytes(void*p,size_t*n){if(injecting("vt_directory_bytes",0)){*n=fault_len;return fault_rc?scratch.bytes:NULL;}return __real_vt_directory_bytes(p,n);}
+int __real_vt_find_field(void*,uint32_t,TIFFDataType,int,const TIFFField**);
+int __wrap_vt_find_field(void*p,uint32_t k,TIFFDataType ty,int r,const TIFFField**f){if(injecting("vt_find_field",k)){*f=NULL;return fault_rc;}return __real_vt_find_field(p,k,ty,r,f);}
+int __real_vt_field_named(void*,const char*,const TIFFField**);
+int __wrap_vt_field_named(void*p,const char*n,const TIFFField**f){if(injecting("vt_field_named",0)){*f=NULL;return fault_rc;}return __real_vt_field_named(p,n,f);}
 int __real_vt_read_buffer(void*,uint8_t*,size_t);
 int __wrap_vt_read_buffer(void*p,uint8_t*b,size_t n){return injecting("vt_read_buffer",0)?fault_rc:__real_vt_read_buffer(p,b,n);}
 static const char *gray_path,*tile_path;
@@ -277,11 +281,13 @@ static void fields_failures_test(void){
  assert(TIFFMergeFieldInfo(t,NULL,1)==-1&&TIFFMergeFieldInfo(t,&f,4097)==-1&&!TIFFMergeFieldInfo(t,NULL,0));
  for(int i=0;i<4;i++){TIFFFieldInfo bad=f;if(i==0)bad.field_name=NULL;if(i==1)bad.field_type=TIFF_NOTYPE;if(i==2)bad.field_tag=65536;if(i==3)bad.field_readcount=0;assert(TIFFMergeFieldInfo(t,&bad,1)==-1);}
  char big[4097];memset(big,'x',4096);big[4096]=0;f.field_name=big;assert(TIFFMergeFieldInfo(t,&f,1)==-1);f.field_name="Test";
- t->field_count=4096;assert(TIFFMergeFieldInfo(t,&f,1)==-1);t->field_count=0;
- inject("vt_mem_claim",0);assert(TIFFMergeFieldInfo(t,&f,1)==-1);clear_fault();alloc_fail=0;alloc_calls=0;assert(TIFFMergeFieldInfo(t,&f,1)==-1);clear_fault();
- TIFFFieldInfo pair[]={f,f};pair[1].field_tag++;pair[1].field_name=NULL;size_t old=t->field_count;assert(TIFFMergeFieldInfo(t,pair,2)==-1&&t->field_count==old&&!lookup_field(t,64000));
+ /* Like libtiff, a handle registers at most 4096 fields. */
+ TIFF *full=gray();for(uint32_t i=0;i<4096;i++){TIFFFieldInfo x=f;x.field_tag=1000+i;assert(!TIFFMergeFieldInfo(full,&x,1));}
+ assert(TIFFMergeFieldInfo(full,&f,1)==-1);TIFFClose(full);
+ TIFFFieldInfo pair[]={f,f};pair[1].field_tag++;pair[1].field_name=NULL;assert(TIFFMergeFieldInfo(t,pair,2)==-1&&!TIFFFindField(t,64000,TIFF_ANY));
  assert(!TIFFMergeFieldInfo(t,&f,1));assert(TIFFFindField(t,64000,TIFF_SHORT));assert(!TIFFFindField(t,65000,TIFF_SHORT)&&!TIFFFindField(t,65536,TIFF_ANY));assert(!TIFFFieldWithName(t,"missing"));
- t->directory_kind=1;assert(TIFFFieldWithName(t,"ExposureTime"));t->directory_kind=2;assert(TIFFFieldWithName(t,"VersionID"));t->directory_kind=0;
+ uint64_t main_dir=TIFFCurrentDirOffset(t);assert(TIFFReadEXIFDirectory(t,main_dir)&&TIFFFieldWithName(t,"ExposureTime"));assert(TIFFReadGPSDirectory(t,main_dir)&&TIFFFieldWithName(t,"VersionID"));assert(TIFFSetDirectory(t,0)&&TIFFFieldWithName(t,"Test"));
+ inject("vt_field_named",-1);assert(!TIFFFieldWithName(t,"Test"));clear_fault();
  assert(TIFFFieldWithTag(t,TIFFTAG_LERC_PARAMETERS));assert(TIFFGetTagListEntry(t,-1)==UINT32_MAX);assert(!TIFFSetFileName(t,NULL));assert(!call_default_set(NULL,1,0));
  TIFFTagMethods methods=t->methods;t->methods.vgetfield=NULL;assert(!TIFFGetField(t,256,&n32));t->methods.vsetfield=NULL;assert(!TIFFSetField(t,256,(uint32_t)1));t->methods=methods;
  assert(!TIFFSetField(t,65001,1));assert(!TIFFSetField(t,TIFFTAG_SOFTWARE,NULL));size_t limit=t->options.output;t->options.output=3;assert(!TIFFSetField(t,TIFFTAG_SOFTWARE,"long"));t->options.output=limit;
@@ -292,8 +298,8 @@ static void fields_failures_test(void){
  TIFFFieldInfo asymmetric={64014,1,2,TIFF_SHORT,FIELD_CUSTOM,1,0,"Asymmetric"};assert(!TIFFMergeFieldInfo(t,&asymmetric,1));uint16_t vals[]={2,3};assert(TIFFSetField(t,asymmetric.field_tag,vals));
  for(int i=0;i<2;i++){TIFFFieldInfo rational={64015+(uint32_t)i,1,1,i?TIFF_SRATIONAL:TIFF_RATIONAL,FIELD_CUSTOM,1,0,"Rational"};assert(!TIFFMergeFieldInfo(t,&rational,1));assert(TIFFSetField(t,rational.field_tag,1.25));}
  /* Corrupted internal definitions must fail without extracting output data. */
- struct vt_field_node*node=t->fields;TIFFField saved=node->f;node->f.kind=TIFF_NOTYPE;assert(!TIFFSetField(t,node->f.tag,0));node->f=saved;node->f.kind=TIFF_ASCII;node->f.array=0;node->f.size=1;
- inject("vt_typed",1);fault_len=1;assert(!TIFFGetField(t,node->f.tag,&a));clear_fault();node->f=saved;node->f.size=0;assert(!TIFFGetField(t,node->f.tag,&a));inject("vt_field",1);fault_len=0;assert(!TIFFGetField(t,node->f.tag,&a));clear_fault();node->f=saved;
+ TIFFField*node=(TIFFField*)TIFFFindField(t,64016,TIFF_ANY);assert(node);TIFFField saved=*node;node->kind=TIFF_NOTYPE;assert(!TIFFSetField(t,node->tag,0));*node=saved;node->kind=TIFF_ASCII;node->array=0;node->size=1;
+ inject("vt_typed",1);fault_len=1;assert(!TIFFGetField(t,node->tag,&a));clear_fault();*node=saved;node->size=0;assert(!TIFFGetField(t,node->tag,&a));inject("vt_field",1);fault_len=0;assert(!TIFFGetField(t,node->tag,&a));clear_fault();*node=saved;
  inject("vt_scalar",1);fault_tag=258;fault_value=17;assert(!TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a));assert(!TIFFSetField(t,TIFFTAG_COLORMAP,a,a,a));clear_fault();
  inject("vt_channels",-1);assert(!TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a));clear_fault();
  assert(TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a));assert(TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,&a));assert(!TIFFGetFieldDefaulted(t,TIFFTAG_TRANSFERFUNCTION,NULL));
@@ -318,23 +324,27 @@ static void reader_misc_test(void){
  TIFFRGBAImage img;assert(TIFFRGBAImageOK(t,NULL)&&TIFFRGBAImageBegin(&img,t,0,NULL));TIFF *save=img.tif;img.tif=NULL;assert(!TIFFRGBAImageGet(&img,pixels,1,1));img.tif=save;assert(!TIFFRGBAImageGet(&img,pixels,UINT32_MAX,UINT32_MAX));inject("vt_region",1);fault_len=SIZE_MAX;assert(!TIFFRGBAImageGet(&img,pixels,1,100));clear_fault();
  assert(!TIFFReadFromUserBuffer(t,0,bytes,-1,bytes,1));assert(!TIFFReadFromUserBuffer(t,0,bytes,1,bytes,-1));assert(!TIFFReadFromUserBuffer(t,0,NULL,1,bytes,1));assert(!TIFFReadFromUserBuffer(t,0,bytes,1,NULL,1));(void)TIFFReadFromUserBuffer(t,0,NULL,0,NULL,0);
  TIFFClose(t);t=TIFFOpen(tile_path,"rc");assert(t);assert(TIFFIsByteSwapped(t));assert(TIFFComputeStrip(t,0,0)==0);assert(!TIFFCheckTile(t,UINT32_MAX,0,0,0)&&!TIFFCheckTile(t,0,UINT32_MAX,0,0)&&TIFFCheckTile(t,0,0,0,1));assert(TIFFReadEncodedStrip(t,0,bytes,0)==-1);TIFFClose(t);
- assert(!TIFFIsTiled(NULL));unknown_warnings(NULL);
+ assert(!TIFFIsTiled(NULL));
 }
 static unsigned print_callbacks;
 static void printer(TIFF*t,FILE*f,long flags){(void)t;(void)flags;print_callbacks++;fputs("callback\n",f);}
+/* libtiff 4.7.1's internal TIFFField and TIFFFieldArray layouts. */
+struct vt_import_field {uint32_t tag;short read_count,write_count;TIFFDataType type;uint32_t anonymous;int get_type;unsigned short bit;unsigned char change,pass;char *name;const TIFFFieldArray *children;};
+struct vt_import_array {int type;uint32_t allocated,count;const struct vt_import_field *fields;};
 static void custom_and_print_test(void){
- TIFF*t=gray();struct vt_import_field f={.tag=62000,.read_count=1,.write_count=1,.type=TIFF_SHORT,.get_type=4,.bit=FIELD_CUSTOM,.name="Imported"};struct vt_import_array a={0,0,1,&f};
+ TIFF*t=gray();uint64_t main_dir=TIFFCurrentDirOffset(t);struct vt_import_field f={.tag=62000,.read_count=1,.write_count=1,.type=TIFF_SHORT,.get_type=4,.bit=FIELD_CUSTOM,.name="Imported"};struct vt_import_array a={0,0,1,&f};
  a.count=4097;assert(!TIFFReadCustomDirectory(t,8,(const TIFFFieldArray*)&a));a.count=1;a.fields=NULL;assert(!TIFFReadCustomDirectory(t,8,(const TIFFFieldArray*)&a));a.fields=&f;
  for(int i=0;i<5;i++){struct vt_import_field bad=f;if(i==0)bad.name=NULL;if(i==1)bad.tag=65536;if(i>=2)bad.get_type=(int[]){0,51,14}[i-2];a.fields=&bad;assert(!TIFFReadCustomDirectory(t,8,(const TIFFFieldArray*)&a));}a.fields=&f;
- size_t count=t->field_count;inject("vt_mem_claim",0);assert(!TIFFReadCustomDirectory(t,8,(const TIFFFieldArray*)&a));clear_fault();assert(t->field_count==count);
- inject("vt_custom_dir",0);assert(!TIFFReadCustomDirectory(t,8,(const TIFFFieldArray*)&a));clear_fault();assert(t->field_count==count&&t->directory_kind==0);
+ /* A failed import, or a failed read, registers none of the fields. */
+ struct vt_import_field two[2]={f,f};two[1].name=NULL;a.fields=two;a.count=2;assert(!TIFFReadCustomDirectory(t,main_dir,(const TIFFFieldArray*)&a));a.fields=&f;a.count=1;
+ assert(!TIFFReadCustomDirectory(t,(uint64_t)1<<40,(const TIFFFieldArray*)&a)&&t->directory_kind==0);
+ assert(TIFFReadCustomDirectory(t,main_dir,NULL)&&!TIFFFindField(t,62000,TIFF_ANY));assert(TIFFSetDirectory(t,0));
  TIFFFieldInfo other={62001,1,1,TIFF_SHORT,FIELD_CUSTOM,1,0,"Other"};assert(!TIFFMergeFieldInfo(t,&other,1));
- inject("vt_custom_dir",1);assert(TIFFReadCustomDirectory(t,8,NULL));for(int i=0;i<4;i++){f.get_type=(int[]){4,18,30,42}[i];assert(TIFFReadCustomDirectory(t,8,(const TIFFFieldArray*)&a));assert(lookup_field(t,62000));}clear_fault();t->directory_kind=0;assert(lookup_field(t,62001));TIFFClose(t);
+ for(int i=0;i<4;i++){f.get_type=(int[]){4,18,30,42}[i];assert(TIFFReadCustomDirectory(t,main_dir,(const TIFFFieldArray*)&a));assert(TIFFFindField(t,62000,TIFF_ANY)&&!TIFFFindField(t,62001,TIFF_ANY));}assert(TIFFSetDirectory(t,0)&&TIFFFindField(t,62001,TIFF_ANY));TIFFClose(t);
  t=gray();assert(TIFFSetField(t,TIFFTAG_SOFTWARE,"a\1\177z"));FILE*out=tmpfile();assert(out);t->methods.printdir=printer;TIFFPrintDirectory(t,out,0);assert(print_callbacks==1);inject("vt_typed",-1);TIFFPrintDirectory(t,out,0);clear_fault();
  inject("vt_mem_claim",0);/* An unknown tag cannot be registered under the failed claim. */
  TIFFFieldInfo fi={64000,1,1,TIFF_SHORT,FIELD_CUSTOM,1,0,"PrintScalar"};clear_fault();assert(!TIFFMergeFieldInfo(t,&fi,1));assert(TIFFSetField(t,64000,42));
- /* Forget its registered schema; enumeration must handle failed anonymous registration. */
- free_fields(t);inject("vt_mem_claim",0);TIFFPrintDirectory(t,out,0);assert(TIFFGetTagListCount(t)>=0);assert(TIFFGetTagListEntry(t,100)==UINT32_MAX);clear_fault();
+ inject("vt_find_field",-1);TIFFPrintDirectory(t,out,0);clear_fault();assert(TIFFGetTagListCount(t)>=0);assert(TIFFGetTagListEntry(t,100)==UINT32_MAX);
  inject("vt_typed",1);fault_tag=TIFFTAG_SOFTWARE;fault_len=2;scratch.bytes[0]='a';scratch.bytes[1]='b';TIFFPrintDirectory(t,out,0);clear_fault();fclose(out);TIFFClose(t);
  t=TIFFOpen(tile_path,"rc");assert(t);out=tmpfile();assert(out);TIFFPrintDirectory(t,out,TIFFPRINT_STRIPS);fclose(out);TIFFClose(t);
 }

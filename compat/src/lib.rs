@@ -71,6 +71,8 @@ mod metadata;
 mod writer;
 mod store;
 mod index;
+mod fields;
+mod schema;
 use storage::{Buf,Mem,Memory,Source,Backend,ReadProc,SeekProc};
 use directory::*;
 use store::{Store,Values};
@@ -93,6 +95,7 @@ struct Handle{
     work:usize,chain_steps:usize,chain:Buf<u64>,stream:Option<stream::Cached>,cache:Option<(usize,Buf<u8>)>,rendered:Option<Buf<u8>>,jpeg_rgb:bool,logluv16:bool,chop:bool,deferred:bool,converted:Buf<metadata::Converted>,directory_kind:u32,writing:bool,
     /// libtiff's current row, strip and tile.
     position:[u32;3],
+    fields:fields::Fields,
 }
 impl Handle{
     fn open(mut source:Source,output:usize,work:usize,flags:u32)->R<Self>{
@@ -102,11 +105,11 @@ impl Handle{
         let limits=Limits{max_input:source.input,max_output:output,..Limits::conservative()};
         let chop=flags&1!=0;let deferred=flags&32!=0;
         let (data,meta)=if writing||flags&2!=0{empty_metadata(&source.mem,header)?}else{metadata(&mut source,header,header.first_ifd,&limits,chop,deferred)?};
-        let converted=Buf::new(0,&source.mem)?;let data=Store::new(data,&source.mem)?;
+        let converted=Buf::new(0,&source.mem)?;let data=Store::new(data,&source.mem)?;let fields=fields::Fields::new(&source.mem)?;
         let mut chain=Buf::new(1,&source.mem)?;if meta.off!=0{chain.push(meta.off)?;}
         // Like libtiff, a header-only open has no current directory yet.
         let page=if !writing&&flags&2!=0{u32::MAX}else{0};
-        Ok(Self{writing,converted,directory_kind:0,position:[u32::MAX;3],source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
+        Ok(Self{writing,converted,directory_kind:0,position:[u32::MAX;3],fields,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
     }
     fn set_offset(&mut self,off:u64,page:u32)->R<()>{
         let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop,self.deferred)?;

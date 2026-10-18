@@ -33,11 +33,9 @@ struct tiff {
   TIFFUnmapFileProc unmap;
   struct TIFFOpenOptions options;
   uint32_t flags, directory_kind;
-  struct vt_field_node *fields;
   struct vt_client_info *client_info;
   TIFFTagMethods methods;
-  size_t field_count;
-  int field_error, directory_written;
+  int directory_written;
   float default_reference[6];
 };
 static _Thread_local int last_code;
@@ -268,7 +266,6 @@ static uint32_t modeflags(const char *mode) {
   return flags;
 }
 static void unknown_warnings(TIFF *t);
-static void free_fields(TIFF *t);
 static void free_client_info(TIFF *t);
 static int default_getfield(TIFF *,uint32_t,va_list);
 static int default_setfield(TIFF *,uint32_t,va_list);
@@ -318,7 +315,6 @@ static void destroy(TIFF *t) {
   if (!t)
     return;
   free_client_info(t);
-  free_fields(t);
   vt_close(t->state);
   free(t->owned_name);
   free(t);

@@ -3,6 +3,21 @@
 #include "include/verified_tiff.h"
 #include <stddef.h>
 #include <stdint.h>
+/* The C view of a field of compat/src/fields.rs, which checks this layout. */
+struct _TIFFField {
+  uint32_t tag;
+  TIFFDataType type;
+  int read_count, write_count, pass_count, size, count_size, custom;
+  const char *name;
+  TIFFDataType kind;
+  int array, anonymous;
+};
+_Static_assert(sizeof(TIFFField) == 56 && offsetof(TIFFField, name) == 32 &&
+               offsetof(TIFFField, kind) == 40 && offsetof(TIFFField, anonymous) == 48,
+               "field view layout");
+/* compat/src/fields.rs reads these caller structures with the same layout. */
+_Static_assert(sizeof(TIFFFieldInfo) == 24 && offsetof(TIFFFieldInfo, field_name) == 16,
+               "TIFFFieldInfo layout");
 void *vt_open_fd(int, size_t, size_t, size_t, size_t, size_t, size_t, uint32_t);
 void *vt_open_client(thandle_t, TIFFReadWriteProc, TIFFSeekProc, uint64_t, size_t, size_t, size_t, size_t, size_t, size_t, uint32_t);
 int vt_next(void *);
@@ -43,9 +58,16 @@ const uint8_t *vt_read(void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
                        size_t *);
 void vt_not_implemented(const char *);
 void vt_not_implemented_for(TIFF *, const char *);
+int vt_merge_fields(void *, const TIFFFieldInfo *, uint32_t);
+int vt_read_custom_directory(void *, uint64_t, const TIFFFieldArray *);
+void vt_fields_begin(void *);
+int vt_fields_failed(void *);
+int vt_find_field(void *, uint32_t, TIFFDataType, int, const TIFFField **);
+int vt_field_named(void *, const char *, const TIFFField **);
+uint32_t vt_custom_tags(void *);
+uint32_t vt_custom_tag(void *, uint32_t);
+uint32_t vt_unknown_tag(void *, size_t *);
 uint8_t vt_field_plan(uint16_t,int,int,size_t,int,size_t,size_t);
-int vt_field_registration(uint16_t,int,int,int);
-uint16_t vt_host_type(uint16_t);
 uint32_t vt_color_index(uint32_t,uint32_t);
 uint32_t vt_ycbcr_tables(int32_t,int32_t,int32_t,int32_t,int32_t);
 int vt_commit(uint8_t *,size_t,size_t,const uint8_t *,size_t);

@@ -1,91 +1,37 @@
-/* Public metadata ABI. Field values are converted and bounds checked in Rust.
- * Registration and C varargs handling remain explicitly unverified. */
-struct _TIFFField {
-  uint32_t tag;
-  TIFFDataType type;
-  int read_count,write_count,pass_count,size,count_size,custom;
-  const char *name;
-  TIFFDataType kind;
-  int array,anonymous;
-};
-#include "field_schemas.inc"
-struct vt_field_node {struct vt_field_node *next; TIFFField f; unsigned dir; size_t charge; char name[];};
+/* Public metadata ABI. The field registry, its schemas and anonymous fields
+ * are in compat/src/fields.rs; field values are converted and bounds checked
+ * in Rust. C varargs handling remains explicitly unverified. */
 static _Atomic(TIFFExtendProc) tag_extender;
 TIFFExtendProc TIFFSetTagExtender(TIFFExtendProc p){return atomic_exchange(&tag_extender,p);}
-static const TIFFField *static_field(TIFF *t,uint32_t tag){
-  const TIFFField *a=tiffFields;size_t n=sizeof(tiffFields)/sizeof(*a);
-  if(t->directory_kind==1){a=exifFields;n=sizeof(exifFields)/sizeof(*a);}
-  if(t->directory_kind==2){a=gpsFields;n=sizeof(gpsFields)/sizeof(*a);}
-  for(size_t i=0;i<n;i++)if(a[i].tag==tag)return a+i;
-  return NULL;
-}
-static const TIFFField *lookup_field(TIFF *t,uint32_t tag){
-  for(struct vt_field_node *p=t->fields;p;p=p->next)
-    if(p->dir==t->directory_kind&&p->f.tag==tag)return &p->f;
-  return static_field(t,tag);
-}
-static int add_field(TIFF *t,TIFFField f){
-  if(t->field_count>=4096){fail(t,EFBIG,"TIFFMergeFieldInfo","field registration limit");t->field_error=1;return 0;}
-  size_t n=strnlen(f.name,4096);if(n==4096){fail(t,EINVAL,"TIFFMergeFieldInfo","field name too long");t->field_error=1;return 0;}
-  size_t charge=sizeof(struct vt_field_node)+n+1;
-  if(!vt_mem_claim(t->state,charge)){bridge_fail(t,"TIFFMergeFieldInfo");t->field_error=1;return 0;}
-  struct vt_field_node *p=malloc(charge);
-  if(!p){vt_mem_release(t->state,charge);fail(t,ENOMEM,"TIFFMergeFieldInfo","allocation failed");t->field_error=1;return 0;}
-  memcpy(p->name,f.name,n+1);p->f=f;p->f.name=p->name;p->dir=t->directory_kind;p->charge=charge;
-  p->next=t->fields;t->fields=p;t->field_count++;return 1;
-}
-static void free_fields(TIFF *t){
-  while(t->fields){struct vt_field_node *p=t->fields;t->fields=p->next;vt_mem_release(t->state,p->charge);free(p);}t->field_count=0;
-}
-static TIFFDataType host_type(TIFFDataType type){
-  return (TIFFDataType)vt_host_type((uint16_t)type);
+/* The field of a tag, or NULL. `resolve` gives a tag the directory holds an
+ * anonymous field, as libtiff's directory reader does. */
+static const TIFFField *find_field(TIFF *t,uint32_t tag,TIFFDataType type,int resolve,const char *fn){
+  const TIFFField *f=NULL;
+  if(vt_find_field(t->state,tag,type,resolve,&f)<0)bridge_fail(t,fn);
+  return f;
 }
 int TIFFMergeFieldInfo(TIFF *t,const TIFFFieldInfo info[],uint32_t n){
   if(!valid(t,__func__))return -1;
-  struct vt_field_node *head=t->fields;
-  if((!info&&n)||n>4096){fail(t,EINVAL,__func__,"invalid field array");goto rollback;}
-  for(uint32_t i=0;i<n;i++){
-    const TIFFFieldInfo *x=info+i;
-    if(lookup_field(t,x->field_tag))continue;
-    TIFFDataType kind=host_type(x->field_type);int size=TIFFDataWidth(kind);
-    if(!x->field_name||!size||x->field_tag>65535||!vt_field_registration((uint16_t)x->field_type,x->field_readcount,x->field_writecount,x->field_passcount)){fail(t,EINVAL,__func__,"invalid field definition");goto rollback;}
-    TIFFField f={x->field_tag,x->field_type,x->field_readcount,x->field_writecount,x->field_passcount,size,x->field_passcount?(x->field_readcount==TIFF_VARIABLE2?4:2):0,x->field_bit==FIELD_CUSTOM,x->field_name,kind,x->field_passcount||x->field_readcount!=1||kind==TIFF_ASCII,0};
-    if(!add_field(t,f))goto rollback;
-  }
+  if(!vt_merge_fields(t->state,info,n)){bridge_fail(t,__func__);return -1;}
   return 0; /* libtiff's legacy registration API returns zero on success. */
-rollback:
-  while(t->fields!=head){struct vt_field_node *p=t->fields;t->fields=p->next;t->field_count--;vt_mem_release(t->state,p->charge);free(p);}
-  t->field_error=1;return -1;
-}
-static const TIFFField *resolve_field(TIFF *t,uint32_t tag){
-  const TIFFField *f=lookup_field(t,tag);if(f)return f;
-  uint16_t kind=0;size_t n=0;
-  if(tag>65535||!vt_field(t->state,tag,&kind,&n))return NULL;
-  char name[32];snprintf(name,sizeof(name),"Tag %u",tag);
-  TIFFDataType host=host_type((TIFFDataType)kind);
-  TIFFField v={tag,(TIFFDataType)kind,-3,-3,1,TIFFDataWidth(host),4,1,name,host,1,1};
-  if(!add_field(t,v))return NULL;
-  return &t->fields->f;
 }
 static int initialise_fields(TIFF *t,unsigned kind){
-  t->directory_kind=kind;t->field_error=0;
-  if(kind==0){t->methods.vgetfield=default_getfield;t->methods.vsetfield=default_setfield;t->methods.printdir=NULL;TIFFExtendProc f=atomic_load(&tag_extender);if(f)f(t);}
-  return !t->field_error;
+  t->directory_kind=kind;
+  if(kind)return 1;
+  t->methods.vgetfield=default_getfield;t->methods.vsetfield=default_setfield;t->methods.printdir=NULL;
+  vt_fields_begin(t->state);
+  TIFFExtendProc f=atomic_load(&tag_extender);if(f)f(t);
+  return !vt_fields_failed(t->state);
 }
 const TIFFField *TIFFFindField(TIFF *t,uint32_t tag,TIFFDataType type){
-  if(!valid(t,__func__))return NULL;
-  const TIFFField *f=resolve_field(t,tag);
-  return f&&(type==TIFF_ANY||type==f->type)?f:NULL;
+  return valid(t,__func__)?find_field(t,tag,type,1,__func__):NULL;
 }
 const TIFFField *TIFFFieldWithTag(TIFF *t,uint32_t tag){return TIFFFindField(t,tag,TIFF_ANY);}
 const TIFFField *TIFFFieldWithName(TIFF *t,const char *name){
   if(!valid(t,__func__)||!name)return NULL;
-  for(struct vt_field_node *p=t->fields;p;p=p->next)if(p->dir==t->directory_kind&&!strcmp(p->f.name,name))return &p->f;
-  const TIFFField *a=tiffFields;size_t n=sizeof(tiffFields)/sizeof(*a);
-  if(t->directory_kind==1){a=exifFields;n=sizeof(exifFields)/sizeof(*a);}
-  if(t->directory_kind==2){a=gpsFields;n=sizeof(gpsFields)/sizeof(*a);}
-  for(size_t i=0;i<n;i++)if(!strcmp(a[i].name,name))return a+i;
-  return NULL;
+  const TIFFField *f=NULL;
+  if(vt_field_named(t->state,name,&f)<0)bridge_fail(t,__func__);
+  return f;
 }
 uint32_t TIFFFieldTag(const TIFFField *f){return f?f->tag:0;}
 const char *TIFFFieldName(const TIFFField *f){return f?f->name:NULL;}
@@ -96,15 +42,10 @@ int TIFFFieldWriteCount(const TIFFField *f){return f?f->write_count:0;}
 int TIFFFieldSetGetSize(const TIFFField *f){return f?f->size:0;}
 int TIFFFieldSetGetCountSize(const TIFFField *f){return f?f->count_size:0;}
 int TIFFFieldIsAnonymous(const TIFFField *f){return f?f->anonymous:0;}
-int TIFFGetTagListCount(TIFF *t){
-  if(!valid(t,__func__))return 0;
-  int count=0;size_t n=info(t,15);
-  for(size_t i=0;i<n;i++){const TIFFField *f=resolve_field(t,vt_tag(t->state,i));if(f&&f->custom)count++;}return count;
-}
+int TIFFGetTagListCount(TIFF *t){return valid(t,__func__)?(int)vt_custom_tags(t->state):0;}
 uint32_t TIFFGetTagListEntry(TIFF *t,int index){
   if(!valid(t,__func__)||index<0)return UINT32_MAX;
-  size_t n=info(t,15);
-  for(size_t i=0;i<n;i++){uint32_t tag=vt_tag(t->state,i);const TIFFField *f=resolve_field(t,tag);if(f&&f->custom&&index--==0)return tag;}return UINT32_MAX;
+  return vt_custom_tag(t->state,(uint32_t)index);
 }
 /* One pointer per ColorMap or TransferFunction channel; Rust checks each
    channel's 1 << BitsPerSample entries against the stored length. */
@@ -122,7 +63,7 @@ static int channels_getfield(TIFF *t,uint32_t tag,va_list ap,int def){
   return 1;
 }
 static int generic_getfield(TIFF *t,uint32_t tag,va_list ap,int def){
-  const TIFFField *f=resolve_field(t,tag);
+  const TIFFField *f=find_field(t,tag,TIFF_ANY,1,"TIFFGetField");
   if(!f)return 0; /* Optional absent tags do not raise a decode error. */
   const uint8_t *data=NULL;size_t n=0;
   TIFFDataType kind=f->kind;
@@ -171,9 +112,9 @@ static int generic_getfield(TIFF *t,uint32_t tag,va_list ap,int def){
   return 1;
 }
 static void unknown_warnings(TIFF *t){
-  if(!t||!t->options.warn_unknown)return;
-  size_t n=info(t,15);
-  for(size_t i=0;i<n;i++){uint32_t tag=vt_tag(t->state,i);if(!lookup_field(t,tag))TIFFWarningExtR(t,"TIFFReadDirectory","Unknown field with tag %u",tag);}
+  if(!t->options.warn_unknown)return;
+  size_t at=0;uint32_t tag;
+  while((tag=vt_unknown_tag(t->state,&at))!=UINT32_MAX)TIFFWarningExtR(t,"TIFFReadDirectory","Unknown field with tag %u",tag);
 }
 int TIFFReadEXIFDirectory(TIFF *t,uint64_t off){
   if(!valid(t,__func__))return 0;
@@ -184,7 +125,7 @@ int TIFFReadGPSDirectory(TIFF *t,uint64_t off){
   if(!vt_custom_dir(t->state,off,2)){bridge_fail(t,__func__);return 0;}return initialise_fields(t,2);
 }
 static int generic_setfield(TIFF *t,uint32_t tag,va_list ap){
-  const TIFFField *f=lookup_field(t,tag);
+  const TIFFField *f=find_field(t,tag,TIFF_ANY,0,"TIFFSetField");
   if(!f){fail(t,ENOSYS,"TIFFSetField","unregistered field");return 0;}
   TIFFDataType kind=f->kind;size_t count=1;const void *input=NULL;
   union {uint64_t u;int64_t i;double d;float f;uint32_t u32;int32_t i32;uint16_t u16;int16_t i16;uint8_t u8;int8_t i8;} scalar;
