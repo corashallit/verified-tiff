@@ -75,6 +75,7 @@ mod fields;
 mod schema;
 mod get;
 mod set;
+mod open;
 use storage::{Buf,Mem,Memory,Source,Backend,ReadProc,SeekProc};
 use directory::*;
 use store::{Store,Values};
@@ -100,20 +101,24 @@ struct Handle{
     fields:fields::Fields,
     /// The ReferenceBlackWhite default TIFFGetFieldDefaulted last gave.
     default_reference:[f32;6],
+    /// Whether directory reads warn of tags no field describes.
+    warn_unknown:bool,
 }
 impl Handle{
-    fn open(mut source:Source,output:usize,work:usize,flags:u32)->R<Self>{
-        if source.len>source.input as u64{return Err((LIMIT,"input byte limit"));}
-        let writing=flags&4!=0;
-        let header=if writing{container::Header{little_endian:flags&16==0,big:flags&8!=0,first_ifd:0}}else{let b=source.read(0,source.len.min(16) as usize)?;container::header(&b).map_err(err)?};
-        let limits=Limits{max_input:source.input,max_output:output,..Limits::conservative()};
-        let chop=flags&1!=0;let deferred=flags&32!=0;
-        let (data,meta)=if writing||flags&2!=0{empty_metadata(&source.mem,header)?}else{metadata(&mut source,header,header.first_ifd,&limits,chop,deferred)?};
+    fn open(mut source:Source,options:&open::Options,flags:u32)->R<Self>{
+        use open::{BIGENDIAN,BIGTIFF,CHOP,DEFERRED,HEADER,WRITE};
+        if source.len>source.input as u64||source.len>isize::MAX as u64{return Err((LIMIT,"input byte limit"));}
+        let writing=flags&WRITE!=0;
+        let header=if writing{container::Header{little_endian:flags&BIGENDIAN==0,big:flags&BIGTIFF!=0,first_ifd:0}}else{let b=source.read(0,source.len.min(16) as usize)?;container::header(&b).map_err(err)?};
+        let limits=Limits{max_input:source.input,max_output:options.output,..Limits::conservative()};
+        let (work,warn_unknown)=(options.work,options.warn_unknown!=0);
+        let chop=flags&CHOP!=0;let deferred=flags&DEFERRED!=0;
+        let (data,meta)=if writing||flags&HEADER!=0{empty_metadata(&source.mem,header)?}else{metadata(&mut source,header,header.first_ifd,&limits,chop,deferred)?};
         let converted=Buf::new(0,&source.mem)?;let data=Store::new(data,&source.mem)?;let fields=fields::Fields::new(&source.mem)?;
         let mut chain=Buf::new(1,&source.mem)?;if meta.off!=0{chain.push(meta.off)?;}
         // Like libtiff, a header-only open has no current directory yet.
-        let page=if !writing&&flags&2!=0{u32::MAX}else{0};
-        Ok(Self{writing,converted,directory_kind:0,default_reference:[0.;6],position:[u32::MAX;3],fields,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
+        let page=if !writing&&flags&HEADER!=0{u32::MAX}else{0};
+        Ok(Self{writing,warn_unknown,converted,directory_kind:0,default_reference:[0.;6],position:[u32::MAX;3],fields,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
     }
     fn set_offset(&mut self,off:u64,page:u32)->R<()>{
         let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop,self.deferred)?;
@@ -157,22 +162,24 @@ unsafe fn handle<'a>(p: *mut c_void) -> R<&'a mut Handle> {
     }
 }
 #[no_mangle]
-pub unsafe extern "C" fn vt_open_fd(fd:i32,input:usize,output:usize,work:usize,single:usize,cumulative:usize,base:usize,flags:u32)->*mut c_void{
+pub unsafe extern "C" fn vt_open_fd(fd:i32,options:*const open::Options,base:usize,flags:u32)->*mut c_void{
     guard(ptr::null_mut(),||{
+        let o=options.as_ref().ok_or((INVALID,"null options"))?;
         if fd<0{return Err((INVALID,"invalid file descriptor"));}
         let file=std::mem::ManuallyDrop::new(std::fs::File::from_raw_fd(fd));
         let len=file.metadata().map_err(|_|(5,"input stat failed"))?.len();
-        let mem=Memory::new(single,cumulative,base.checked_add(std::mem::size_of::<Handle>()).ok_or((LIMIT,"handle size overflow"))?)?;
-        let source=Source{read_buffer:None,backend:Backend::Fd(fd),len,mem,input};
-        Ok(Box::into_raw(Box::new(Handle::open(source,output,work,flags)?)).cast())
+        let mem=Memory::new(o.single,o.cumulative,base.checked_add(std::mem::size_of::<Handle>()).ok_or((LIMIT,"handle size overflow"))?)?;
+        let source=Source{read_buffer:None,backend:Backend::Fd(fd),len,mem,input:o.input};
+        Ok(Box::into_raw(Box::new(Handle::open(source,o,flags)?)).cast())
     })
 }
 #[no_mangle]
-pub unsafe extern "C" fn vt_open_client(client:*mut c_void,read:ReadProc,seek:SeekProc,len:u64,input:usize,output:usize,work:usize,single:usize,cumulative:usize,base:usize,flags:u32)->*mut c_void{
+pub unsafe extern "C" fn vt_open_client(client:*mut c_void,read:ReadProc,seek:SeekProc,len:u64,options:*const open::Options,base:usize,flags:u32)->*mut c_void{
     guard(ptr::null_mut(),||{
-        let mem=Memory::new(single,cumulative,base.checked_add(std::mem::size_of::<Handle>()).ok_or((LIMIT,"handle size overflow"))?)?;
-        let source=Source{read_buffer:None,backend:Backend::Client{client,read,seek},len,mem,input};
-        Ok(Box::into_raw(Box::new(Handle::open(source,output,work,flags)?)).cast())
+        let o=options.as_ref().ok_or((INVALID,"null options"))?;
+        let mem=Memory::new(o.single,o.cumulative,base.checked_add(std::mem::size_of::<Handle>()).ok_or((LIMIT,"handle size overflow"))?)?;
+        let source=Source{read_buffer:None,backend:Backend::Client{client,read,seek},len,mem,input:o.input};
+        Ok(Box::into_raw(Box::new(Handle::open(source,o,flags)?)).cast())
     })
 }
 #[no_mangle]

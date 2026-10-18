@@ -559,7 +559,7 @@ pub unsafe extern "C" fn vt_custom_tag(p: *mut c_void, index: u32) -> u32 {
     guard(u32::MAX, || Ok(handle(p)?.custom_tag(index as usize).unwrap_or(u32::MAX)))
 }
 /// The next tag from `*at` on that has no field, as TIFFReadDirectory warns
-/// about, or `u32::MAX`.
+/// about when the open options ask it to, or `u32::MAX`.
 #[no_mangle]
 pub unsafe extern "C" fn vt_unknown_tag(p: *mut c_void, at: *mut usize) -> u32 {
     guard(u32::MAX, || {
@@ -567,7 +567,7 @@ pub unsafe extern "C" fn vt_unknown_tag(p: *mut c_void, at: *mut usize) -> u32 {
         if at.is_null() {
             return Err((INVALID, "null tag cursor"));
         }
-        while *at < h.meta.tags.len() {
+        while h.warn_unknown && *at < h.meta.tags.len() {
             let tag = h.meta.tags[*at].key.into();
             *at += 1;
             if h.fields.lookup(h.directory_kind, tag).is_none() {

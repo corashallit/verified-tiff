@@ -24,18 +24,15 @@ static void untrack(void*p){for(size_t i=0;i<owned_count;i++)if(owned[i]==p){own
 static void *shim_malloc(size_t n){alloc_bytes=n;void*p=allocation_fails()?NULL:malloc(n);track(p);return p;}
 static void *shim_calloc(size_t n,size_t s){alloc_bytes=n*s;void*p=allocation_fails()?NULL:calloc(n,s);track(p);return p;}
 static void *shim_realloc(void *p,size_t n){alloc_bytes=n;if(allocation_fails())return NULL;untrack(p);void*q=realloc(p,n);if(q)track(q);else track(p);return q;}
-static char *shim_strdup(const char *s){char*p=allocation_fails()?NULL:strdup(s);track(p);return p;}
 static void shim_free(void*p){untrack(p);free(p);}
 #define malloc shim_malloc
 #define calloc shim_calloc
 #define realloc shim_realloc
-#define strdup shim_strdup
 #define free shim_free
 #include "../tiff_compat.c"
 #undef malloc
 #undef calloc
 #undef realloc
-#undef strdup
 #undef free
 static const char *fault;
 static uint32_t fault_tag;
@@ -144,7 +141,8 @@ static void null_test(void){
 }
 static void modes_test(void){
  assert(!TIFFOpen(NULL,"r"));assert(!TIFFOpen("/nonexistent/verified-tiff","r"));assert(!TIFFOpen(gray_path,NULL));
- const char *bad[]={"","a","r+","rx","wx","w8x"};for(size_t i=0;i<sizeof(bad)/sizeof(*bad);i++){assert(!readmode(bad[i])&&!writemode(bad[i]));assert(!new_handle("x",bad[i],NULL));}
+ const char *bad[]={"","a","r+","rx","wx","w8x"};for(size_t i=0;i<sizeof(bad)/sizeof(*bad);i++){assert(vt_mode_flags(bad[i])<0);assert(!new_handle("x",bad[i],NULL));}
+ assert(vt_mode_flags("rc")==0&&vt_mode_flags("rcCh")==(VT_CHOP|VT_HEADER)&&vt_mode_flags("rD")==(VT_CHOP|VT_DEFERRED)&&vt_mode_flags("w8b")==(VT_WRITE|VT_BIGTIFF|VT_BIGENDIAN));
  assert(!new_handle(NULL,"r",NULL));char longname[4097];memset(longname,'x',4096);longname[4096]=0;assert(!new_handle(longname,"r",NULL));
  TIFFOpenOptions*o=TIFFOpenOptionsAlloc();assert(o);assert(!VTIFFOpenOptionsSetLimits(o,UINT64_MAX,1,1));assert(!VTIFFOpenOptionsSetLimits(o,1,UINT64_MAX,1));
  TIFFOpenOptionsSetMaxSingleMemAlloc(o,-1);assert(!new_handle("x","r",o));TIFFOpenOptionsFree(o);
@@ -155,7 +153,7 @@ static void modes_test(void){
  alloc_fail=0;alloc_calls=0;assert(!TIFFOpenOptionsAlloc());clear_fault();
  const char *vars[]={"VTIFF_MAX_FILE_BYTES","VTIFF_MAX_BUFFER_BYTES","VTIFF_MAX_WORK","VTIFF_MAX_SINGLE_ALLOC","VTIFF_MAX_TOTAL_ALLOC"};
  const char *badenv[]={"","-1","x","18446744073709551616","9223372036854775808"};
- for(size_t i=0;i<5;i++)for(size_t j=0;j<5;j++){setenv(vars[i],badenv[j],1);o=TIFFOpenOptionsAlloc();assert(o);if(i==2&&j==4)assert(!o->invalid_env);else assert(o->invalid_env);assert(VTIFFOpenOptionsSetLimits(o,1024,1024,1024));TIFFOpenOptionsSetMaxSingleMemAlloc(o,1024);TIFFOpenOptionsSetMaxCumulatedMemAlloc(o,1024);assert(!o->invalid_env);TIFFOpenOptionsFree(o);unsetenv(vars[i]);}
+ for(size_t i=0;i<5;i++)for(size_t j=0;j<5;j++){setenv(vars[i],badenv[j],1);o=TIFFOpenOptionsAlloc();assert(o);if(i==2&&j==4)assert(!o->limits.invalid_env);else assert(o->limits.invalid_env);assert(VTIFFOpenOptionsSetLimits(o,1024,1024,1024));TIFFOpenOptionsSetMaxSingleMemAlloc(o,1024);TIFFOpenOptionsSetMaxCumulatedMemAlloc(o,1024);assert(!o->limits.invalid_env);TIFFOpenOptionsFree(o);unsetenv(vars[i]);}
  TIFF*t=gray();assert(TIFFIsMSB2LSB(t));assert(TIFFIsByteSwapped(t)==(TIFFIsBigEndian(t)!=HOST_BIGENDIAN));assert(!TIFFIsUpSampled(t));assert(TIFFCurrentTile(t)==UINT32_MAX);assert(TIFFGetWriteProc(t)==NULL&&TIFFGetCloseProc(t)==NULL&&TIFFGetSizeProc(t)==NULL&&TIFFGetMapFileProc(t)==NULL&&TIFFGetUnmapFileProc(t)==NULL);assert(TIFFFlushData(t));
  const TIFFCodec*c=TIFFFindCODEC(1);assert(c&&c->init(t,1));assert(!c->init(t,5)&&!c->init(NULL,1));assert(!TIFFFindCODEC(65535));TIFFClose(t);
 }
@@ -244,8 +242,8 @@ static void callbacks_test(void){
  struct memfile*m=malloc(sizeof(*m));assert(m);load_mem(m);
  assert(!client(m,"bad"));assert(!m->closed);
  assert(!TIFFClientOpen("x","r",m,NULL,memwrite,memseek,memclose,memsize,NULL,NULL));assert(!TIFFClientOpen("x","r",m,memread,memwrite,NULL,memclose,memsize,NULL,NULL));assert(!TIFFClientOpen("x","r",m,memread,memwrite,memseek,memclose,NULL,NULL,NULL));assert(!TIFFClientOpen("x","w",m,memread,NULL,memseek,memclose,memsize,NULL,NULL));assert(!m->closed);
- TIFFOpenOptions*o=TIFFOpenOptionsAlloc();assert(o);o->input=m->len-1;assert(!TIFFClientOpenExt("x","r",m,memread,memwrite,memseek,memclose,memsize,NULL,NULL,o));o->input=SIZE_MAX;size_t saved=m->len;m->len=SIZE_MAX;assert(!TIFFClientOpenExt("x","r",m,memread,memwrite,memseek,memclose,memsize,NULL,NULL,o));m->len=saved;TIFFOpenOptionsFree(o);
- TIFFSetTagExtender(broken_extender);assert(!client(m,"rc"));assert(!m->closed);int fd=open(gray_path,O_RDONLY);assert(fd>=0&&!TIFFFdOpen(fd,"x","w"));assert(!TIFFFdOpen(fd,"x","rc")&&fcntl(fd,F_GETFD)>=0);close(fd);TIFFSetTagExtender(NULL);
+ TIFFOpenOptions*o=TIFFOpenOptionsAlloc();assert(o);o->limits.input=m->len-1;assert(!TIFFClientOpenExt("x","r",m,memread,memwrite,memseek,memclose,memsize,NULL,NULL,o));o->limits.input=SIZE_MAX;size_t saved=m->len;m->len=SIZE_MAX;assert(!TIFFClientOpenExt("x","r",m,memread,memwrite,memseek,memclose,memsize,NULL,NULL,o));m->len=saved;TIFFOpenOptionsFree(o);
+ TIFFSetTagExtender(broken_extender);assert(!client(m,"rc"));assert(!m->closed);int fd=open(gray_path,O_RDONLY);assert(fd>=0&&!TIFFFdOpen(fd,"x","w")&&!TIFFFdOpen(fd,"x","q"));assert(!TIFFFdOpen(fd,"x","rc")&&fcntl(fd,F_GETFD)>=0);close(fd);TIFFSetTagExtender(NULL);
  TIFF*t=client(m,"rc");assert(t);TIFFSetTagExtender(broken_extender);assert(!TIFFSetDirectory(t,0));assert(!TIFFSetSubDirectory(t,TIFFCurrentDirOffset(t)));inject("vt_info",0);fault_tag=4;fault_value=8;/* force a next-directory attempt */
  /* next itself is separately injected below; the actual one-directory source fails safely. */
  assert(!TIFFReadDirectory(t));clear_fault();TIFFSetTagExtender(NULL);TIFFClose(t);assert(m->closed==1);
@@ -347,7 +345,7 @@ static void getter_defaults_test(void){
 static int no_photometric(TIFF*t,uint32_t k,va_list a){return k==TIFFTAG_PHOTOMETRIC?0:default_getfield(t,k,a);}
 static int empty_extras(TIFF*t,uint32_t k,va_list a){if(k==TIFFTAG_EXTRASAMPLES){*va_arg(a,uint16_t*)=0;*va_arg(a,uint16_t**)=NULL;return 1;}return default_getfield(t,k,a);}
 static void final_branches_test(const char *planar){
- assert(!writemode(NULL));TIFF*t=gray();assert(TIFFFlush(t));assert(TIFFCheckTile(t,0,0,0,0)&&TIFFComputeTile(t,0,0,0,0)==0);uint8_t b[16384];assert(TIFFReadRawStrip(t,0,b,0)==0);
+ assert(vt_mode_flags(NULL)<0);TIFF*t=gray();assert(TIFFFlush(t));assert(TIFFCheckTile(t,0,0,0,0)&&TIFFComputeTile(t,0,0,0,0)==0);uint8_t b[16384];assert(TIFFReadRawStrip(t,0,b,0)==0);
  float*p=NULL;assert(!TIFFGetFieldDefaulted(t,TIFFTAG_PRIMARYCHROMATICITIES,&p));
  TIFFRGBAImage img;t->methods.vgetfield=empty_extras;assert(TIFFRGBAImageBegin(&img,t,0,NULL)&&img.alpha==0);t->methods.vgetfield=default_getfield;
  t->methods.vgetfield=no_photometric;assert(TIFFRGBAImageBegin(&img,t,0,NULL)&&img.photometric==PHOTOMETRIC_MINISBLACK);t->methods.vgetfield=default_getfield;

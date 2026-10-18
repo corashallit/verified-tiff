@@ -7,7 +7,7 @@ int TIFFWriteCheck(TIFF *t,int tiles,const char *module){
 }
 int TIFFWriteDirectory(TIFF *t){
   if(!valid(t,__func__))return 0;
-  if(!(t->flags&4)||!t->write||!t->seek){vt_not_implemented_for(t,__func__);return 0;}
+  if(!(t->flags&VT_WRITE)||!t->write||!t->seek){vt_not_implemented_for(t,__func__);return 0;}
   size_t n=0;const uint8_t *p=vt_directory_bytes(t->state,&n);
   if(!p){bridge_fail(t,__func__);return 0;}
   if(t->seek(t->client,0,SEEK_SET)!=0){fail(t,EIO,__func__,"temporary directory seek failed");return 0;}
@@ -15,7 +15,7 @@ int TIFFWriteDirectory(TIFF *t){
   t->directory_written=1;return 1;
 }
 int TIFFFlushData(TIFF *t){return valid(t,__func__);}
-int TIFFFlush(TIFF *t){if(!valid(t,__func__))return 0;return (t->flags&4)&&!t->directory_written?TIFFWriteDirectory(t):1;}
+int TIFFFlush(TIFF *t){if(!valid(t,__func__))return 0;return (t->flags&VT_WRITE)&&!t->directory_written?TIFFWriteDirectory(t):1;}
 
 int TIFFReadFromUserBuffer(TIFF *t,uint32_t k,void *input,tmsize_t n,void *output,tmsize_t wanted){
   if(!valid(t,__func__))return 0;

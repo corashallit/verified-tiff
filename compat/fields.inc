@@ -48,7 +48,6 @@ uint32_t TIFFGetTagListEntry(TIFF *t,int index){
   return vt_custom_tag(t->state,(uint32_t)index);
 }
 static void unknown_warnings(TIFF *t){
-  if(!t->options.warn_unknown)return;
   size_t at=0;uint32_t tag;
   while((tag=vt_unknown_tag(t->state,&at))!=UINT32_MAX)TIFFWarningExtR(t,"TIFFReadDirectory","Unknown field with tag %u",tag);
 }

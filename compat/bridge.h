@@ -18,8 +18,21 @@ _Static_assert(sizeof(TIFFField) == 56 && offsetof(TIFFField, name) == 32 &&
 /* compat/src/fields.rs reads these caller structures with the same layout. */
 _Static_assert(sizeof(TIFFFieldInfo) == 24 && offsetof(TIFFFieldInfo, field_name) == 16,
                "TIFFFieldInfo layout");
-void *vt_open_fd(int, size_t, size_t, size_t, size_t, size_t, size_t, uint32_t);
-void *vt_open_client(thandle_t, TIFFReadWriteProc, TIFFSeekProc, uint64_t, size_t, size_t, size_t, size_t, size_t, size_t, uint32_t);
+/* Open options, modes and limits (compat/src/open.rs). */
+struct vt_options {
+  size_t input, output, work, single, cumulative;
+  int warn_unknown, unsupported;
+  uint32_t invalid_env;
+};
+_Static_assert(sizeof(struct vt_options) == 56, "options layout");
+enum { VT_CHOP = 1, VT_HEADER = 2, VT_WRITE = 4, VT_BIGTIFF = 8, VT_BIGENDIAN = 16, VT_DEFERRED = 32 };
+void vt_options_default(struct vt_options *, char *(*)(const char *));
+int vt_options_limits(struct vt_options *, uint64_t, uint64_t, uint64_t);
+int vt_options_allocation(struct vt_options *, int, int64_t);
+int64_t vt_mode_flags(const char *);
+size_t vt_admit(const struct vt_options *, const char *, size_t);
+void *vt_open_fd(int, const struct vt_options *, size_t, uint32_t);
+void *vt_open_client(thandle_t, TIFFReadWriteProc, TIFFSeekProc, uint64_t, const struct vt_options *, size_t, uint32_t);
 int vt_next(void *);
 int vt_clientdata(void *,thandle_t);
 const uint8_t *vt_read_size(void *,uint32_t,uint32_t,uint32_t,size_t,size_t *);

@@ -13,10 +13,7 @@
 _Static_assert(sizeof(void *) == 8 && sizeof(tmsize_t) == 8,
                "Linux LP64 ABI required");
 struct TIFFOpenOptions {
-  size_t input, output, work, single, cumulative;
-  int warn_unknown;
-  int unsupported;
-  unsigned invalid_env;
+  struct vt_options limits;
   TIFFErrorHandlerExtR error, warning;
   void *error_data, *warning_data;
 };
@@ -162,30 +159,9 @@ const char *TIFFGetVersion(void) {
   return "verified-tiff 0.1.0; partial read-only libtiff 4.7.1 C API; adapter "
          "is not formally verified";
 }
-static size_t configured_limit(const char *name, size_t fallback, int *invalid) {
-  const char *s=getenv(name);
-  if(!s)return fallback;
-  if(!*s){*invalid=1;return fallback;}
-  size_t n=0;
-  for(const unsigned char *p=(const unsigned char *)s;*p;p++){
-    if(*p<'0'||*p>'9'||n>(SIZE_MAX-(*p-'0'))/10){*invalid=1;return fallback;}
-    n=n*10+(*p-'0');
-  }
-  return n;
-}
 static struct TIFFOpenOptions defaults(void) {
   struct TIFFOpenOptions o = {0};
-  int bad=0;
-  o.input=configured_limit("VTIFF_MAX_FILE_BYTES",PTRDIFF_MAX,&bad);
-  if(bad||o.input>PTRDIFF_MAX)o.invalid_env|=1;
-  bad=0;o.output=configured_limit("VTIFF_MAX_BUFFER_BYTES",268435456,&bad);
-  if(bad||o.output>PTRDIFF_MAX)o.invalid_env|=2;
-  bad=0;o.work=configured_limit("VTIFF_MAX_WORK",1000000000,&bad);
-  if(bad)o.invalid_env|=4;
-  bad=0;o.single=configured_limit("VTIFF_MAX_SINGLE_ALLOC",268435456,&bad);
-  if(bad||o.single>PTRDIFF_MAX)o.invalid_env|=8;
-  bad=0;o.cumulative=configured_limit("VTIFF_MAX_TOTAL_ALLOC",536870912,&bad);
-  if(bad||o.cumulative>PTRDIFF_MAX)o.invalid_env|=16;
+  vt_options_default(&o.limits, getenv);
   return o;
 }
 TIFFOpenOptions *TIFFOpenOptionsAlloc(void) {
@@ -199,14 +175,10 @@ TIFFOpenOptions *TIFFOpenOptionsAlloc(void) {
 void TIFFOpenOptionsFree(TIFFOpenOptions *o) { free(o); }
 int VTIFFOpenOptionsSetLimits(TIFFOpenOptions *o, uint64_t in, uint64_t out,
                               uint64_t work) {
-  if (!o || in > PTRDIFF_MAX || out > PTRDIFF_MAX) {
-    fail(NULL, EINVAL, __func__, "invalid options/limits");
+  if (!vt_options_limits(o ? &o->limits : NULL, in, out, work)) {
+    bridge_fail(NULL, __func__);
     return 0;
   }
-  o->input = (size_t)in;
-  o->output = (size_t)out;
-  o->work = (size_t)work;
-  o->invalid_env &= ~7u;
   return 1;
 }
 void TIFFOpenOptionsSetErrorHandlerExtR(TIFFOpenOptions *o,
@@ -230,39 +202,16 @@ void TIFFOpenOptionsSetWarningHandlerExtR(TIFFOpenOptions *o,
 /* Limits count requested, live per-handle heap buffers. Zero disables a
  * standard allocation limit; extension input/output/work zero remains zero. */
 void TIFFOpenOptionsSetMaxSingleMemAlloc(TIFFOpenOptions *o, tmsize_t n) {
-  if (!o || n < 0) { if (o) o->unsupported=1; fail(NULL, EINVAL, __func__, "invalid allocation limit"); return; }
-  o->single=(size_t)n;
-  o->invalid_env &= ~8u;
+  if (!vt_options_allocation(o ? &o->limits : NULL, 0, n))
+    bridge_fail(NULL, __func__);
 }
 void TIFFOpenOptionsSetMaxCumulatedMemAlloc(TIFFOpenOptions *o, tmsize_t n) {
-  if (!o || n < 0) { if (o) o->unsupported=1; fail(NULL, EINVAL, __func__, "invalid allocation limit"); return; }
-  o->cumulative=(size_t)n;
-  o->invalid_env &= ~16u;
+  if (!vt_options_allocation(o ? &o->limits : NULL, 1, n))
+    bridge_fail(NULL, __func__);
 }
 void TIFFOpenOptionsSetWarnAboutUnknownTags(TIFFOpenOptions *o, int n) {
   if (!o) { fail(NULL, EINVAL, __func__, "null options"); return; }
-  o->warn_unknown=n!=0;
-}
-static int readmode(const char *mode) {
-  if (!mode || *mode!='r') return 0;
-  for (const char *p=mode+1;*p;p++) if (!strchr("bcCmMBDOh",*p)) return 0;
-  return 1;
-}
-static int writemode(const char *mode){
-  if(!mode||*mode!='w')return 0;
-  for(const char *p=mode+1;*p;p++)if(!strchr("bl8+",*p))return 0;
-  return 1;
-}
-static uint32_t modeflags(const char *mode) {
-  uint32_t flags=1; /* upstream's usual strip-chopping default */
-  for (const char *p=mode+1;*p;p++) {
-    if (*p=='C') flags|=1;
-    if (*p=='c') flags&=~1u;
-    if (*p=='h') flags|=2;
-    if (*p=='D'||*p=='O') flags|=32; /* deferred strile loading */
-  }
-  if(*mode=='w'){flags=4;if(strchr(mode,'8'))flags|=8;if(strchr(mode,'b'))flags|=16;}
-  return flags;
+  o->limits.warn_unknown=n!=0;
 }
 static void unknown_warnings(TIFF *t);
 static void free_client_info(TIFF *t);
@@ -271,40 +220,35 @@ static int default_setfield(TIFF *,uint32_t,va_list);
 static int initialise_fields(TIFF *t);
 static TIFF *new_handle(const char *name, const char *mode,
                         TIFFOpenOptions *options) {
-  if (!readmode(mode) && !writemode(mode)) {
+  int64_t flags = vt_mode_flags(mode);
+  if (flags < 0) {
     vt_not_implemented("TIFFOpen unsupported read/write mode");
     return NULL;
   }
-  if (!name) {
-    fail(NULL, EINVAL, "TIFFOpen", "null name");
-    return NULL;
-  }
   struct TIFFOpenOptions limits = options ? *options : defaults();
-  if(limits.unsupported||limits.invalid_env){fail(NULL,EINVAL,"TIFFOpen","invalid configured resource limit");return NULL;}
-  size_t namelen = strnlen(name,4096);
-  if(namelen==4096){fail(NULL,EINVAL,"TIFFOpen","name exceeds 4095 bytes");return NULL;}
-  namelen++;
-  if ((limits.single && (sizeof(TIFF)>limits.single || namelen>limits.single)) ||
-      (limits.cumulative && sizeof(TIFF)+namelen>limits.cumulative)) {
+  size_t namelen = vt_admit(&limits.limits, name, sizeof(TIFF));
+  if (!namelen) {
+    /* The options' own error handler reports a handle they reject. */
     TIFF temporary = {0}; temporary.options=limits;
-    fail(&temporary, EFBIG, "TIFFOpen", "handle allocation limit"); return NULL;
+    bridge_fail(&temporary, "TIFFOpen"); return NULL;
   }
   TIFF *t = calloc(1, sizeof(*t));
   if (!t) {
     fail(NULL, ENOMEM, "TIFFOpen", "allocation failed");
     return NULL;
   }
-  t->name = strdup(name);
+  t->name = malloc(namelen);
   if (!t->name) {
     free(t);
     fail(NULL, ENOMEM, "TIFFOpen", "allocation failed");
     return NULL;
   }
-  t->owned_name=t->name;t->owned_fd=-1;t->mode=writemode(mode)?O_RDWR:O_RDONLY;
+  memcpy(t->name, name, namelen);
+  t->owned_name=t->name;t->owned_fd=-1;t->mode=(flags&VT_WRITE)?O_RDWR:O_RDONLY;
   t->options = limits;
   t->methods.vgetfield=default_getfield;t->methods.vsetfield=default_setfield;
   t->fd = -1;
-  t->flags=modeflags(mode);
+  t->flags=(uint32_t)flags;
   return t;
 }
 static void destroy(TIFF *t) {
@@ -317,12 +261,16 @@ static void destroy(TIFF *t) {
 }
 TIFF *TIFFFdOpenExt(int fd, const char *name, const char *mode,
                     TIFFOpenOptions *options) {
-  if(!readmode(mode)){vt_not_implemented("TIFFFdOpen unsupported write mode");return NULL;}
+  int64_t flags = vt_mode_flags(mode);
+  if (flags < 0 || (flags & VT_WRITE)) {
+    vt_not_implemented("TIFFFdOpen unsupported write mode");
+    return NULL;
+  }
   TIFF *t = new_handle(name, mode, options);
   if (!t)
     return NULL;
   t->state =
-      vt_open_fd(fd, t->options.input, t->options.output, t->options.work, t->options.single, t->options.cumulative, sizeof(*t)+strlen(t->name)+1, t->flags);
+      vt_open_fd(fd, &t->options.limits, sizeof(*t)+strlen(t->name)+1, t->flags);
   if (!t->state) {
     bridge_fail(t, __func__);
     destroy(t);
@@ -338,7 +286,8 @@ TIFF *TIFFFdOpen(int fd, const char *name, const char *mode) {
 }
 TIFF *TIFFOpenExt(const char *name, const char *mode,
                   TIFFOpenOptions *options) {
-  if (!readmode(mode)) {
+  int64_t flags = vt_mode_flags(mode);
+  if (flags < 0 || (flags & VT_WRITE)) {
     vt_not_implemented("TIFFOpen unsupported read/write mode");
     return NULL;
   }
@@ -378,20 +327,14 @@ TIFF *TIFFClientOpenExt(const char *name, const char *mode, thandle_t client,
   t->size = size;
   t->map = map;
   t->unmap = unmap;
-  if (!read || !seek || !size || ((t->flags&4)&&!write)) {
+  if (!read || !seek || !size || ((t->flags&VT_WRITE)&&!write)) {
     fail(t, EINVAL, __func__, "read/seek/size callbacks required");
     destroy(t);
     return NULL;
   }
   /* Like libtiff, a writer never asks for the size of its new output. */
-  uint64_t n = t->flags & 4 ? 0 : size(client);
-  if (n > t->options.input || n > PTRDIFF_MAX) {
-    fail(t, EFBIG, __func__, "input limit");
-    destroy(t);
-    return NULL;
-  }
-  t->state=vt_open_client(client, read, seek, n, t->options.input,
-      t->options.output, t->options.work, t->options.single, t->options.cumulative,
+  uint64_t n = t->flags & VT_WRITE ? 0 : size(client);
+  t->state=vt_open_client(client, read, seek, n, &t->options.limits,
       sizeof(*t)+strlen(t->name)+1, t->flags);
   if (!t->state) {
     bridge_fail(t, __func__);
@@ -412,7 +355,7 @@ void TIFFCleanup(TIFF *t) { destroy(t); }
 void TIFFClose(TIFF *t) {
   if (!t)
     return;
-  if((t->flags&4)&&!t->directory_written)(void)TIFFWriteDirectory(t);
+  if((t->flags&VT_WRITE)&&!t->directory_written)(void)TIFFWriteDirectory(t);
   int fd = t->owned_fd;
   TIFFCloseProc close_cb = t->close;
   thandle_t c = t->client;
