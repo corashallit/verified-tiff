@@ -24,7 +24,8 @@ impl Text {
     fn bytes(&mut self, s: &[u8]) -> R<()> {
         let n = self.buf.len().checked_add(s.len()).filter(|&n| n <= self.limit);
         let n = n.ok_or((LIMIT, "directory text limit"))?;
-        self.buf.reserve(n.checked_next_power_of_two().unwrap_or(n).min(self.limit))?;
+        self.buf
+            .reserve(n.checked_next_power_of_two().unwrap_or(n).min(self.limit))?;
         self.buf.extend(s)
     }
     fn print(&mut self, args: fmt::Arguments) -> R<()> {

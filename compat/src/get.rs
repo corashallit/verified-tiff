@@ -114,7 +114,12 @@ const STRINGS: [u16; 12] = [
 ];
 /// The tags of two 16-bit values, got through two pointers and set as two
 /// ints.
-pub const PAIRS: [u16; 4] = [tag::YCBCRSUBSAMPLING, tag::PAGENUMBER, tag::HALFTONEHINTS, tag::DOTRANGE];
+pub const PAIRS: [u16; 4] = [
+    tag::YCBCRSUBSAMPLING,
+    tag::PAGENUMBER,
+    tag::HALFTONEHINTS,
+    tag::DOTRANGE,
+];
 /// Opaque byte blocks, got with a 32-bit count.
 const BLOBS: [u16; 4] = [tag::ICCPROFILE, tag::XMLPACKET, tag::PHOTOSHOP, tag::JPEGTABLES];
 

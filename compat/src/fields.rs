@@ -173,17 +173,27 @@ impl Fields {
     /// Like libtiff, the newest registration of a tag comes first, then
     /// the schemas.
     fn locate(&self, dir: u32, tag: u32) -> Option<Found> {
-        if let Some((i, _)) = self.registered().rev().find(|(_, e)| e.dir == dir && u32::from(e.shape.tag) == tag) {
+        if let Some((i, _)) = self
+            .registered()
+            .rev()
+            .find(|(_, e)| e.dir == dir && u32::from(e.shape.tag) == tag)
+        {
             return Some(Found::Registered(i));
         }
-        schemas(dir).iter().find(|s| u32::from(s.shape.tag) == tag).map(Found::Static)
+        schemas(dir)
+            .iter()
+            .find(|s| u32::from(s.shape.tag) == tag)
+            .map(Found::Static)
     }
     fn locate_name(&self, dir: u32, name: &[u8]) -> Option<Found> {
         let named = |e: &&Entry| unsafe { CStr::from_ptr(e.view.name) }.to_bytes() == name;
         if let Some((i, _)) = self.registered().rev().find(|(_, e)| e.dir == dir && named(e)) {
             return Some(Found::Registered(i));
         }
-        schemas(dir).iter().find(|s| s.name.to_bytes() == name).map(Found::Static)
+        schemas(dir)
+            .iter()
+            .find(|s| s.name.to_bytes() == name)
+            .map(Found::Static)
     }
     /// The name of the field of `tag`.
     pub fn name(&self, dir: u32, tag: u32) -> Option<&CStr> {
@@ -214,7 +224,13 @@ impl Fields {
         let shown = |e: &&Buf<Entry>| e[0].schema.is_some_and(|s| ptr::eq(s, schema));
         if self.entries.iter().find(shown).is_none() {
             let view = View::new(&schema.shape, schema.name.as_ptr());
-            let entry = Entry { view, shape: schema.shape, dir, schema: Some(schema), _name: None };
+            let entry = Entry {
+                view,
+                shape: schema.shape,
+                dir,
+                schema: Some(schema),
+                _name: None,
+            };
             self.push(entry, mem)?;
         }
         Ok(&self.entries.iter().find(shown).ok_or((5, "missing field view"))?[0].view)
@@ -237,7 +253,16 @@ impl Fields {
             owned.extend(name)?;
             owned.push(0)?;
             let view = View::new(&shape, owned.as_ptr().cast());
-            self.push(Entry { view, shape, dir, schema: None, _name: Some(owned) }, mem)
+            self.push(
+                Entry {
+                    view,
+                    shape,
+                    dir,
+                    schema: None,
+                    _name: Some(owned),
+                },
+                mem,
+            )
         })();
         if result.is_err() {
             self.failed = true;
@@ -328,8 +353,20 @@ unsafe fn name<'a>(p: *const c_char) -> Option<&'a [u8]> {
 /// then the array types with no count, a 16-bit and a 32-bit count.
 fn setget(code: i32) -> Option<(u16, usize, bool)> {
     const TYPES: [u16; 14] = [
-        kind::NOTYPE, kind::ASCII, kind::BYTE, kind::SBYTE, kind::SHORT, kind::SSHORT, kind::LONG,
-        kind::SLONG, kind::LONG8, kind::SLONG8, kind::FLOAT, kind::DOUBLE, kind::IFD8, kind::SLONG,
+        kind::NOTYPE,
+        kind::ASCII,
+        kind::BYTE,
+        kind::SBYTE,
+        kind::SHORT,
+        kind::SSHORT,
+        kind::LONG,
+        kind::SLONG,
+        kind::LONG8,
+        kind::SLONG8,
+        kind::FLOAT,
+        kind::DOUBLE,
+        kind::IFD8,
+        kind::SLONG,
     ];
     let (base, count_size) = match code {
         1..=13 => (code, 0),
@@ -372,7 +409,8 @@ impl Handle {
         let mut cursor = &mut text[..];
         write!(cursor, "Tag {tag}").map_err(|_| (5, "anonymous field name"))?;
         let n = 16 - cursor.len();
-        self.fields.register(self.directory_kind, shape, &text[..n], &self.source.mem)?;
+        self.fields
+            .register(self.directory_kind, shape, &text[..n], &self.source.mem)?;
         Ok(Some(shape))
     }
     fn expose(&mut self, found: Option<Found>) -> R<*const View> {
@@ -409,14 +447,21 @@ impl Handle {
                     write_count: wc,
                     pass_count: pass,
                     size,
-                    count_size: if pass == 0 { 0 } else if rc == VARIABLE2 { 4 } else { 2 },
+                    count_size: if pass == 0 {
+                        0
+                    } else if rc == VARIABLE2 {
+                        4
+                    } else {
+                        2
+                    },
                     custom: x.bit == FIELD_CUSTOM,
                     array: pass != 0 || rc != 1 || host == kind::ASCII,
                     anonymous: false,
                 };
                 self.fields.admit()?;
                 let name = name(x.name).ok_or((INVALID, "field name too long"))?;
-                self.fields.register(self.directory_kind, shape, name, &self.source.mem)?;
+                self.fields
+                    .register(self.directory_kind, shape, name, &self.source.mem)?;
             }
             Ok(())
         })();
@@ -442,7 +487,8 @@ impl Handle {
         let result = (|| {
             for i in 0..count {
                 let f = ptr::read_unaligned(fields.add(i));
-                let Some((host, count_size, array)) = setget(f.get_type).filter(|_| !f.name.is_null() && f.tag <= 0xffff)
+                let Some((host, count_size, array)) =
+                    setget(f.get_type).filter(|_| !f.name.is_null() && f.tag <= 0xffff)
                 else {
                     return Err((INVALID, "unsupported custom field convention"));
                 };
@@ -518,7 +564,13 @@ pub unsafe extern "C" fn vt_fields_failed(p: *mut c_void) -> i32 {
 /// 0 when there is none, -1 on failure. `resolve` gives a tag the directory
 /// holds an anonymous field.
 #[no_mangle]
-pub unsafe extern "C" fn vt_find_field(p: *mut c_void, tag: u32, kind: i32, resolve: i32, out: *mut *const View) -> i32 {
+pub unsafe extern "C" fn vt_find_field(
+    p: *mut c_void,
+    tag: u32,
+    kind: i32,
+    resolve: i32,
+    out: *mut *const View,
+) -> i32 {
     guard(-1, || {
         let h = handle(p)?;
         if out.is_null() {
@@ -564,7 +616,9 @@ pub unsafe extern "C" fn vt_custom_tags(p: *mut c_void) -> u32 {
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_custom_tag(p: *mut c_void, index: u32) -> u32 {
-    guard(u32::MAX, || Ok(handle(p)?.custom_tag(index as usize).unwrap_or(u32::MAX)))
+    guard(u32::MAX, || {
+        Ok(handle(p)?.custom_tag(index as usize).unwrap_or(u32::MAX))
+    })
 }
 /// The next tag from `*at` on that has no field, as TIFFReadDirectory warns
 /// about when the open options ask it to, or `u32::MAX`.

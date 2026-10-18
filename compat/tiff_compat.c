@@ -19,8 +19,8 @@ struct TIFFOpenOptions {
 };
 struct tiff {
   void *state;
-  char *name,*owned_name;
-  int fd,owned_fd,mode;
+  char *name, *owned_name;
+  int fd, owned_fd, mode;
   thandle_t client;
   TIFFReadWriteProc read, write;
   TIFFSeekProc seek;
@@ -208,12 +208,15 @@ void TIFFOpenOptionsSetMaxCumulatedMemAlloc(TIFFOpenOptions *o, tmsize_t n) {
     bridge_fail(NULL, __func__);
 }
 void TIFFOpenOptionsSetWarnAboutUnknownTags(TIFFOpenOptions *o, int n) {
-  if (!o) { fail(NULL, EINVAL, __func__, "null options"); return; }
-  o->limits.warn_unknown=n!=0;
+  if (!o) {
+    fail(NULL, EINVAL, __func__, "null options");
+    return;
+  }
+  o->limits.warn_unknown = n != 0;
 }
 static void unknown_warnings(TIFF *t);
-static int default_getfield(TIFF *,uint32_t,va_list);
-static int default_setfield(TIFF *,uint32_t,va_list);
+static int default_getfield(TIFF *, uint32_t, va_list);
+static int default_setfield(TIFF *, uint32_t, va_list);
 static int initialise_fields(TIFF *t);
 static TIFF *new_handle(const char *name, const char *mode,
                         TIFFOpenOptions *options) {
@@ -226,8 +229,10 @@ static TIFF *new_handle(const char *name, const char *mode,
   size_t namelen = vt_admit(&limits.limits, name, sizeof(TIFF));
   if (!namelen) {
     /* The options' own error handler reports a handle they reject. */
-    TIFF temporary = {0}; temporary.options=limits;
-    bridge_fail(&temporary, "TIFFOpen"); return NULL;
+    TIFF temporary = {0};
+    temporary.options = limits;
+    bridge_fail(&temporary, "TIFFOpen");
+    return NULL;
   }
   TIFF *t = calloc(1, sizeof(*t));
   if (!t) {
@@ -241,11 +246,14 @@ static TIFF *new_handle(const char *name, const char *mode,
     return NULL;
   }
   memcpy(t->name, name, namelen);
-  t->owned_name=t->name;t->owned_fd=-1;t->mode=(flags&VT_WRITE)?O_RDWR:O_RDONLY;
+  t->owned_name = t->name;
+  t->owned_fd = -1;
+  t->mode = (flags & VT_WRITE) ? O_RDWR : O_RDONLY;
   t->options = limits;
-  t->methods.vgetfield=default_getfield;t->methods.vsetfield=default_setfield;
+  t->methods.vgetfield = default_getfield;
+  t->methods.vsetfield = default_setfield;
   t->fd = -1;
-  t->flags=(uint32_t)flags;
+  t->flags = (uint32_t)flags;
   return t;
 }
 static void destroy(TIFF *t) {
@@ -265,15 +273,19 @@ TIFF *TIFFFdOpenExt(int fd, const char *name, const char *mode,
   TIFF *t = new_handle(name, mode, options);
   if (!t)
     return NULL;
-  t->state =
-      vt_open_fd(fd, &t->options.limits, sizeof(*t)+strlen(t->name)+1, t->flags);
+  t->state = vt_open_fd(fd, &t->options.limits,
+                        sizeof(*t) + strlen(t->name) + 1, t->flags);
   if (!t->state) {
     bridge_fail(t, __func__);
     destroy(t);
     return NULL;
   }
-  t->fd = fd;t->owned_fd=fd;
-  if (!initialise_fields(t)) {destroy(t);return NULL;}
+  t->fd = fd;
+  t->owned_fd = fd;
+  if (!initialise_fields(t)) {
+    destroy(t);
+    return NULL;
+  }
   unknown_warnings(t);
   return t;
 }
@@ -323,21 +335,24 @@ TIFF *TIFFClientOpenExt(const char *name, const char *mode, thandle_t client,
   t->size = size;
   t->map = map;
   t->unmap = unmap;
-  if (!read || !seek || !size || ((t->flags&VT_WRITE)&&!write)) {
+  if (!read || !seek || !size || ((t->flags & VT_WRITE) && !write)) {
     fail(t, EINVAL, __func__, "read/seek/size callbacks required");
     destroy(t);
     return NULL;
   }
   /* Like libtiff, a writer never asks for the size of its new output. */
   uint64_t n = t->flags & VT_WRITE ? 0 : size(client);
-  t->state=vt_open_client(client, read, write, seek, n, &t->options.limits,
-      sizeof(*t)+strlen(t->name)+1, t->flags);
+  t->state = vt_open_client(client, read, write, seek, n, &t->options.limits,
+                            sizeof(*t) + strlen(t->name) + 1, t->flags);
   if (!t->state) {
     bridge_fail(t, __func__);
     destroy(t);
     return NULL;
   }
-  if (!initialise_fields(t)) {destroy(t);return NULL;}
+  if (!initialise_fields(t)) {
+    destroy(t);
+    return NULL;
+  }
   unknown_warnings(t);
   return t;
 }
@@ -364,8 +379,11 @@ void TIFFClose(TIFF *t) {
 }
 const char *TIFFFileName(TIFF *t) { return t ? t->name : NULL; }
 const char *TIFFSetFileName(TIFF *t, const char *n) {
-  if(!valid(t,__func__)||!n)return NULL;
-  const char *old=t->name;t->name=(char*)n;return old;
+  if (!valid(t, __func__) || !n)
+    return NULL;
+  const char *old = t->name;
+  t->name = (char *)n;
+  return old;
 }
 int TIFFFileno(TIFF *t) { return t ? t->fd : -1; }
 thandle_t TIFFClientdata(TIFF *t) { return t ? t->client : NULL; }
@@ -388,7 +406,9 @@ static uint64_t info(TIFF *t, unsigned key) {
   return v;
 }
 int TIFFIsTiled(TIFF *t) { return (int)info(t, VT_INFO_TILED); }
-int TIFFIsBigEndian(TIFF *t) { return valid(t, __func__) ? !info(t, VT_INFO_LITTLE_ENDIAN) : 0; }
+int TIFFIsBigEndian(TIFF *t) {
+  return valid(t, __func__) ? !info(t, VT_INFO_LITTLE_ENDIAN) : 0;
+}
 int TIFFIsByteSwapped(TIFF *t) {
   return valid(t, __func__) ? (TIFFIsBigEndian(t) != HOST_BIGENDIAN) : 0;
 }
@@ -397,12 +417,22 @@ int TIFFIsBigTIFF(TIFF *t) { return (int)info(t, VT_INFO_BIGTIFF); }
 int TIFFIsUpSampled(TIFF *t) {
   return valid(t, __func__) && vt_upsampled(t->state);
 }
-tdir_t TIFFCurrentDirectory(TIFF *t) { return (tdir_t)info(t, VT_INFO_DIRECTORY); }
+tdir_t TIFFCurrentDirectory(TIFF *t) {
+  return (tdir_t)info(t, VT_INFO_DIRECTORY);
+}
 uint64_t TIFFCurrentDirOffset(TIFF *t) { return info(t, VT_INFO_OFFSET); }
-uint32_t TIFFCurrentRow(TIFF *t) { return t ? vt_position(t->state, VT_ROW) : UINT32_MAX; }
-uint32_t TIFFCurrentStrip(TIFF *t) { return t ? vt_position(t->state, VT_STRIP) : UINT32_MAX; }
-uint32_t TIFFCurrentTile(TIFF *t) { return t ? vt_position(t->state, VT_TILE) : UINT32_MAX; }
-int TIFFLastDirectory(TIFF *t) { return valid(t, __func__) && info(t, VT_INFO_NEXT) == 0; }
+uint32_t TIFFCurrentRow(TIFF *t) {
+  return t ? vt_position(t->state, VT_ROW) : UINT32_MAX;
+}
+uint32_t TIFFCurrentStrip(TIFF *t) {
+  return t ? vt_position(t->state, VT_STRIP) : UINT32_MAX;
+}
+uint32_t TIFFCurrentTile(TIFF *t) {
+  return t ? vt_position(t->state, VT_TILE) : UINT32_MAX;
+}
+int TIFFLastDirectory(TIFF *t) {
+  return valid(t, __func__) && info(t, VT_INFO_NEXT) == 0;
+}
 tdir_t TIFFNumberOfDirectories(TIFF *t) {
   if (!valid(t, __func__))
     return 0;
@@ -418,15 +448,20 @@ int TIFFSetDirectory(TIFF *t, tdir_t d) {
     bridge_fail(t, __func__);
     return 0;
   }
-  if (!initialise_fields(t)) return 0;
+  if (!initialise_fields(t))
+    return 0;
   unknown_warnings(t);
   return 1;
 }
 int TIFFReadDirectory(TIFF *t) {
   if (!valid(t, __func__) || TIFFLastDirectory(t))
     return 0;
-  if (!vt_next(t->state)) { bridge_fail(t, __func__); return 0; }
-  if (!initialise_fields(t)) return 0;
+  if (!vt_next(t->state)) {
+    bridge_fail(t, __func__);
+    return 0;
+  }
+  if (!initialise_fields(t))
+    return 0;
   unknown_warnings(t);
   return 1;
 }
@@ -437,7 +472,8 @@ int TIFFSetSubDirectory(TIFF *t, uint64_t off) {
     bridge_fail(t, __func__);
     return 0;
   }
-  if (!initialise_fields(t)) return 0;
+  if (!initialise_fields(t))
+    return 0;
   unknown_warnings(t);
   return 1;
 }
@@ -458,17 +494,39 @@ static int getfield(TIFF *t, uint32_t tag, va_list ap, int def) {
   void *out[3];
   for (size_t i = 0; i < plan.count; i++)
     switch (plan.value[i].type) {
-    case VT_U8: out[i] = va_arg(ap, uint8_t *); break;
-    case VT_I8: out[i] = va_arg(ap, int8_t *); break;
-    case VT_U16: out[i] = va_arg(ap, uint16_t *); break;
-    case VT_I16: out[i] = va_arg(ap, int16_t *); break;
-    case VT_U32: out[i] = va_arg(ap, uint32_t *); break;
-    case VT_I32: out[i] = va_arg(ap, int32_t *); break;
-    case VT_U64: out[i] = va_arg(ap, uint64_t *); break;
-    case VT_I64: out[i] = va_arg(ap, int64_t *); break;
-    case VT_FLOAT: out[i] = va_arg(ap, float *); break;
-    case VT_DOUBLE: out[i] = va_arg(ap, double *); break;
-    default: out[i] = va_arg(ap, void **); break;
+    case VT_U8:
+      out[i] = va_arg(ap, uint8_t *);
+      break;
+    case VT_I8:
+      out[i] = va_arg(ap, int8_t *);
+      break;
+    case VT_U16:
+      out[i] = va_arg(ap, uint16_t *);
+      break;
+    case VT_I16:
+      out[i] = va_arg(ap, int16_t *);
+      break;
+    case VT_U32:
+      out[i] = va_arg(ap, uint32_t *);
+      break;
+    case VT_I32:
+      out[i] = va_arg(ap, int32_t *);
+      break;
+    case VT_U64:
+      out[i] = va_arg(ap, uint64_t *);
+      break;
+    case VT_I64:
+      out[i] = va_arg(ap, int64_t *);
+      break;
+    case VT_FLOAT:
+      out[i] = va_arg(ap, float *);
+      break;
+    case VT_DOUBLE:
+      out[i] = va_arg(ap, double *);
+      break;
+    default:
+      out[i] = va_arg(ap, void **);
+      break;
     }
   for (size_t i = 0; i < plan.count; i++)
     if (!out[i]) {
@@ -481,23 +539,45 @@ static int getfield(TIFF *t, uint32_t tag, va_list ap, int def) {
     uint16_t b16 = (uint16_t)v->bits;
     uint32_t b32 = (uint32_t)v->bits;
     switch (v->type) {
-    case VT_U8: case VT_I8: memcpy(out[i], &b8, sizeof b8); break;
-    case VT_U16: case VT_I16: memcpy(out[i], &b16, sizeof b16); break;
-    case VT_U32: case VT_I32: case VT_FLOAT: memcpy(out[i], &b32, sizeof b32); break;
-    case VT_U64: case VT_I64: case VT_DOUBLE: memcpy(out[i], &v->bits, sizeof v->bits); break;
-    default: *(void **)out[i] = (void *)v->pointer; break;
+    case VT_U8:
+    case VT_I8:
+      memcpy(out[i], &b8, sizeof b8);
+      break;
+    case VT_U16:
+    case VT_I16:
+      memcpy(out[i], &b16, sizeof b16);
+      break;
+    case VT_U32:
+    case VT_I32:
+    case VT_FLOAT:
+      memcpy(out[i], &b32, sizeof b32);
+      break;
+    case VT_U64:
+    case VT_I64:
+    case VT_DOUBLE:
+      memcpy(out[i], &v->bits, sizeof v->bits);
+      break;
+    default:
+      *(void **)out[i] = (void *)v->pointer;
+      break;
     }
   }
   return 1;
 }
-static int default_getfield(TIFF *t,uint32_t k,va_list ap){return getfield(t,k,ap,0);}
+static int default_getfield(TIFF *t, uint32_t k, va_list ap) {
+  return getfield(t, k, ap, 0);
+}
 int TIFFVGetField(TIFF *t, uint32_t k, va_list ap) {
-  if(!valid(t,__func__)||!t->methods.vgetfield)return 0;
-  return t->methods.vgetfield(t,k,ap);
+  if (!valid(t, __func__) || !t->methods.vgetfield)
+    return 0;
+  return t->methods.vgetfield(t, k, ap);
 }
 int TIFFVGetFieldDefaulted(TIFF *t, uint32_t k, va_list ap) {
-  va_list cp;va_copy(cp,ap);int r=TIFFVGetField(t,k,cp);va_end(cp);
-  return r?r:getfield(t,k,ap,1);
+  va_list cp;
+  va_copy(cp, ap);
+  int r = TIFFVGetField(t, k, cp);
+  va_end(cp);
+  return r ? r : getfield(t, k, ap, 1);
 }
 int TIFFGetField(TIFF *t, uint32_t k, ...) {
   va_list ap;
@@ -526,16 +606,26 @@ static int default_setfield(TIFF *t, uint32_t tag, va_list ap) {
   for (size_t i = 0; i < plan.count; i++) {
     struct vt_value *v = &plan.value[i];
     switch (v->type) {
-    case VT_I32: v->bits = (uint64_t)(int64_t)va_arg(ap, int); break;
-    case VT_U32: v->bits = va_arg(ap, uint32_t); break;
-    case VT_U64: v->bits = va_arg(ap, uint64_t); break;
-    case VT_I64: v->bits = (uint64_t)va_arg(ap, int64_t); break;
+    case VT_I32:
+      v->bits = (uint64_t)(int64_t)va_arg(ap, int);
+      break;
+    case VT_U32:
+      v->bits = va_arg(ap, uint32_t);
+      break;
+    case VT_U64:
+      v->bits = va_arg(ap, uint64_t);
+      break;
+    case VT_I64:
+      v->bits = (uint64_t)va_arg(ap, int64_t);
+      break;
     case VT_DOUBLE: {
       double d = va_arg(ap, double);
       memcpy(&v->bits, &d, sizeof d);
       break;
     }
-    default: v->pointer = va_arg(ap, const void *); break;
+    default:
+      v->pointer = va_arg(ap, const void *);
+      break;
     }
   }
   if (!vt_set(t->state, tag, &plan)) {
@@ -544,9 +634,10 @@ static int default_setfield(TIFF *t, uint32_t tag, va_list ap) {
   }
   return 1;
 }
-int TIFFVSetField(TIFF *t,uint32_t tag,va_list ap){
-  if(!valid(t,__func__)||!t->methods.vsetfield)return 0;
-  return t->methods.vsetfield(t,tag,ap);
+int TIFFVSetField(TIFF *t, uint32_t tag, va_list ap) {
+  if (!valid(t, __func__) || !t->methods.vsetfield)
+    return 0;
+  return t->methods.vsetfield(t, tag, ap);
 }
 int TIFFSetField(TIFF *t, uint32_t tag, ...) {
   va_list ap;
@@ -567,13 +658,19 @@ static uint64_t size64(TIFF *t, unsigned kind, uint32_t rows) {
 }
 uint64_t TIFFScanlineSize64(TIFF *t) { return size64(t, VT_SIZE_SCANLINE, 1); }
 tmsize_t TIFFScanlineSize(TIFF *t) { return (tmsize_t)TIFFScanlineSize64(t); }
-uint64_t TIFFRasterScanlineSize64(TIFF *t) { return size64(t, VT_SIZE_RASTER_SCANLINE, 1); }
+uint64_t TIFFRasterScanlineSize64(TIFF *t) {
+  return size64(t, VT_SIZE_RASTER_SCANLINE, 1);
+}
 tmsize_t TIFFRasterScanlineSize(TIFF *t) {
   return (tmsize_t)TIFFRasterScanlineSize64(t);
 }
-uint64_t TIFFStripSize64(TIFF *t) { return size64(t, VT_SIZE_STRIP, UINT32_MAX); }
+uint64_t TIFFStripSize64(TIFF *t) {
+  return size64(t, VT_SIZE_STRIP, UINT32_MAX);
+}
 tmsize_t TIFFStripSize(TIFF *t) { return (tmsize_t)TIFFStripSize64(t); }
-uint64_t TIFFVStripSize64(TIFF *t, uint32_t n) { return size64(t, VT_SIZE_STRIP, n); }
+uint64_t TIFFVStripSize64(TIFF *t, uint32_t n) {
+  return size64(t, VT_SIZE_STRIP, n);
+}
 tmsize_t TIFFVStripSize(TIFF *t, uint32_t n) {
   return (tmsize_t)TIFFVStripSize64(t, n);
 }
@@ -581,7 +678,9 @@ uint64_t TIFFTileRowSize64(TIFF *t) { return size64(t, VT_SIZE_TILE_ROW, 1); }
 tmsize_t TIFFTileRowSize(TIFF *t) { return (tmsize_t)TIFFTileRowSize64(t); }
 uint64_t TIFFTileSize64(TIFF *t) { return size64(t, VT_SIZE_TILE, UINT32_MAX); }
 tmsize_t TIFFTileSize(TIFF *t) { return (tmsize_t)TIFFTileSize64(t); }
-uint64_t TIFFVTileSize64(TIFF *t, uint32_t n) { return size64(t, VT_SIZE_TILE, n); }
+uint64_t TIFFVTileSize64(TIFF *t, uint32_t n) {
+  return size64(t, VT_SIZE_TILE, n);
+}
 tmsize_t TIFFVTileSize(TIFF *t, uint32_t n) {
   return (tmsize_t)TIFFVTileSize64(t, n);
 }
@@ -595,15 +694,21 @@ uint32_t TIFFNumberOfStrips(TIFF *t) {
   }
   return (uint32_t)n;
 }
-uint32_t TIFFNumberOfTiles(TIFF *t) { return (uint32_t)info(t, VT_INFO_SEGMENTS); }
+uint32_t TIFFNumberOfTiles(TIFF *t) {
+  return (uint32_t)info(t, VT_INFO_SEGMENTS);
+}
 static uint64_t strile(TIFF *t, uint32_t index, int counts, int *error) {
   if (error)
     *error = 1;
   if (!valid(t, "TIFFGetStrile"))
     return 0;
-  uint64_t v=0;
-  if(!vt_strile(t->state,index,counts,&v)){bridge_fail(t,"TIFFGetStrile");return 0;}
-  if(error)*error=0;
+  uint64_t v = 0;
+  if (!vt_strile(t->state, index, counts, &v)) {
+    bridge_fail(t, "TIFFGetStrile");
+    return 0;
+  }
+  if (error)
+    *error = 0;
   return v;
 }
 uint64_t TIFFGetStrileOffsetWithErr(TIFF *t, uint32_t k, int *e) {
@@ -670,7 +775,8 @@ static tmsize_t read_into(TIFF *t, unsigned op, uint32_t a, uint32_t b,
   return n;
 }
 int TIFFReadScanline(TIFF *t, void *buf, uint32_t row, uint16_t sample) {
-  return read_into(t, VT_READ_SCANLINE, row, sample, buf, -1, __func__) < 0 ? -1 : 1;
+  return read_into(t, VT_READ_SCANLINE, row, sample, buf, -1, __func__) < 0 ? -1
+                                                                            : 1;
 }
 tmsize_t TIFFReadEncodedStrip(TIFF *t, uint32_t k, void *b, tmsize_t n) {
   return read_into(t, VT_READ_STRIP, k, 0, b, n, __func__);
@@ -779,8 +885,8 @@ int TIFFRGBAImageGet(TIFFRGBAImage *img, uint32_t *out, uint32_t w,
   if (!valid(img->tif, __func__))
     return 0;
   if (!vt_region_into(img->tif->state, img->col_offset, img->row_offset,
-                      img->height, w, h, img->orientation,
-                      img->req_orientation, out)) {
+                      img->height, w, h, img->orientation, img->req_orientation,
+                      out)) {
     bridge_fail(img->tif, __func__);
     return 0;
   }
@@ -806,8 +912,8 @@ void *_TIFFcalloc(tmsize_t n, tmsize_t s) {
     fail(NULL, EINVAL, __func__, "invalid/overflowing size");
     return NULL;
   }
-  size_t bytes=(size_t)n*(size_t)s;
-  void *p = calloc(1,bytes ? bytes : 1);
+  size_t bytes = (size_t)n * (size_t)s;
+  void *p = calloc(1, bytes ? bytes : 1);
   if (!p)
     fail(NULL, ENOMEM, __func__, "allocation failed");
   return p;

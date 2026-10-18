@@ -49,11 +49,8 @@ impl Handle {
         );
         match kind {
             ROW => {
-                let strip = u16::try_from(b)
-                    .ok()
-                    .and_then(|s| self.compute_strip(a, s).ok());
-                self.position[ROW as usize] =
-                    a.checked_add(1).ok_or((INVALID, "scanline row overflow"))?;
+                let strip = u16::try_from(b).ok().and_then(|s| self.compute_strip(a, s).ok());
+                self.position[ROW as usize] = a.checked_add(1).ok_or((INVALID, "scanline row overflow"))?;
                 self.position[STRIP as usize] = strip.unwrap_or(u32::MAX);
             }
             STRIP => {
@@ -104,14 +101,7 @@ pub unsafe extern "C" fn vt_check_tile(p: *mut c_void, x: u32, y: u32, z: u32, s
     })
 }
 #[no_mangle]
-pub unsafe extern "C" fn vt_compute_tile(
-    p: *mut c_void,
-    x: u32,
-    y: u32,
-    z: u32,
-    s: u16,
-    out: *mut u32,
-) -> i32 {
+pub unsafe extern "C" fn vt_compute_tile(p: *mut c_void, x: u32, y: u32, z: u32, s: u16, out: *mut u32) -> i32 {
     guard(0, || {
         let h = handle(p)?;
         let m = &h.meta;
