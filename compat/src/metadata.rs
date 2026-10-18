@@ -99,18 +99,18 @@ fn set_native(data:&mut [u64],i:usize,w:usize,value:u64){
     let b=value.to_ne_bytes();let from=if cfg!(target_endian="big"){8-w}else{0};
     for j in 0..w{let p=i*w+j;let mut a=data[p/8].to_ne_bytes();a[p%8]=b[from+j];data[p/8]=u64::from_ne_bytes(a);}
 }
-#[no_mangle]
-pub unsafe extern "C" fn vt_put(p:*mut c_void,key:u32,kind:u16,count:usize,input:*const u8)->i32{
-    guard(0,||{let h=handle(p)?;let key=u16::try_from(key).map_err(|_|(INVALID,"tag overflow"))?;
+impl Handle{
+    /// Store `count` values of type `kind` from `raw`, in native byte order.
+    pub fn put_native(&mut self,key:u16,kind:u16,count:usize,input:&[u8])->R<()>{
         let w=container::field_size(kind);let len=product(count,w)?;
-        if w==0||len>isize::MAX as usize||(len>0&&input.is_null()){return Err((INVALID,"invalid field input"));}
-        if !h.writing&&h.directory_kind==0&&matches!(key,tag::IMAGEWIDTH|tag::IMAGELENGTH|tag::BITSPERSAMPLE|tag::COMPRESSION
+        if w==0||len!=input.len(){return Err((INVALID,"invalid field input"));}
+        if !self.writing&&self.directory_kind==fields::MAIN&&matches!(key,tag::IMAGEWIDTH|tag::IMAGELENGTH|tag::BITSPERSAMPLE|tag::COMPRESSION
             |tag::SAMPLESPERPIXEL|tag::ROWSPERSTRIP|tag::PLANARCONFIG|tag::PREDICTOR|tag::TILEWIDTH|tag::TILELENGTH
             |tag::STRIPOFFSETS|tag::STRIPBYTECOUNTS|tag::TILEOFFSETS|tag::TILEBYTECOUNTS){return Err((NOTIMPL,"read handle geometry mutation not implemented"));}
-        let mut raw=Buf::zeros(len,h.limits.max_input,&h.source.mem)?;
-        if len>0{raw.copy_from_slice(std::slice::from_raw_parts(input,len));}
-        if h.meta.le!=cfg!(target_endian="little") {let stride=if kind==5||kind==10{4}else{w};for word in raw.chunks_exact_mut(stride){word.reverse();}}
-        h.put(key,kind,count,&raw)?;Ok(1)})
+        let mut raw=Buf::zeros(len,self.limits.max_input,&self.source.mem)?;raw.copy_from_slice(input);
+        if self.meta.le!=cfg!(target_endian="little") {let stride=if kind==5||kind==10{4}else{w};for word in raw.chunks_exact_mut(stride){word.reverse();}}
+        self.put(key,kind,count,&raw)
+    }
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_typed(p:*mut c_void,key:u32,kind:u16,out:*mut *const u8,n:*mut usize)->i32{
@@ -137,18 +137,21 @@ pub unsafe extern "C" fn vt_custom_dir(p:*mut c_void,off:u64,kind:u32)->i32{
 pub unsafe extern "C" fn vt_mem_claim(p:*mut c_void,n:usize)->i32{guard(0,||{handle(p)?.source.mem.claim(n)?;Ok(1)})}
 #[no_mangle]
 pub unsafe extern "C" fn vt_mem_release(p:*mut c_void,n:usize){guard((),||{handle(p)?.source.mem.release(n);Ok(())});}
-#[no_mangle]
-pub unsafe extern "C" fn vt_put_real(p:*mut c_void,key:u32,kind:u16,host:u16,count:usize,input:*const u8)->i32{
-    guard(0,||{let h=handle(p)?;if !matches!(host,11|12)||!matches!(kind,5|10)||(count>0&&input.is_null()){return Err((INVALID,"rational input"));}
-        let len=product(count,8)?;if len>isize::MAX as usize{return Err((LIMIT,"rational input size"));}
-        let mut raw=Buf::new(len,&h.source.mem)?;
-        for i in 0..count{
-            let v=if host==11{ptr::read_unaligned(input.add(product(i,4)?).cast::<f32>()) as f64}else{ptr::read_unaligned(input.add(product(i,8)?).cast::<f64>())};
+impl Handle{
+    /// Store `count` rationals of type `kind` from floats or doubles, as
+    /// `host` gives, in native byte order.
+    pub fn put_real(&mut self,key:u16,kind:u16,host:u16,count:usize,input:&[u8])->R<()>{
+        let w=container::field_size(host);
+        if !matches!(host,11|12)||!matches!(kind,5|10)||input.len()!=product(count,w)?{return Err((INVALID,"rational input"));}
+        let mut raw=Buf::new(product(count,8)?,&self.source.mem)?;
+        for c in input.chunks_exact(w){
+            let v=if host==11{f32::from_ne_bytes([c[0],c[1],c[2],c[3]]) as f64}else{f64::from_ne_bytes([c[0],c[1],c[2],c[3],c[4],c[5],c[6],c[7]])};
             let max=if kind==5{u32::MAX as f64}else{i32::MAX as f64};
             if !v.is_finite()||(kind==5&&v<0.)||v.abs()>max{return Err((INVALID,"rational range"));}
             let den=if v==0.{1.}else{max.min((max/v.abs()).floor()).max(1.)};let num=(v*den).round();
             let a=if kind==5{num as u32}else{num as i32 as u32};let b=den as u32;
-            raw.extend(&if h.meta.le{a.to_le_bytes()}else{a.to_be_bytes()})?;raw.extend(&if h.meta.le{b.to_le_bytes()}else{b.to_be_bytes()})?;
+            raw.extend(&if self.meta.le{a.to_le_bytes()}else{a.to_be_bytes()})?;raw.extend(&if self.meta.le{b.to_le_bytes()}else{b.to_be_bytes()})?;
         }
-        h.put(u16::try_from(key).map_err(|_|(INVALID,"tag overflow"))?,kind,count,&raw)?;Ok(1)})
+        self.put(key,kind,count,&raw)
+    }
 }

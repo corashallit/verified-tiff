@@ -30,8 +30,6 @@ int vt_strile(void *,uint32_t,int,uint64_t *);
 uint32_t vt_tag(void *, size_t);
 const uint8_t *vt_region(void *,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,size_t *);
 void vt_close(void *);
-int vt_put_real(void *,uint32_t,uint16_t,uint16_t,size_t,const void *);
-int vt_put(void *, uint32_t, uint16_t, size_t, const uint8_t *);
 const uint8_t *vt_user_buffer(void *,uint32_t,const uint8_t *,size_t,size_t);
 int vt_write_check(void *);
 const uint8_t *vt_directory_bytes(void *,size_t *);
@@ -47,7 +45,6 @@ uint64_t vt_info(void *, uint32_t);
 uint32_t vt_count_dirs(void *);
 int vt_set_offset(void *, uint64_t);
 int64_t vt_size(void *, uint32_t, uint32_t);
-int vt_mode(void *, uint32_t, int);
 int vt_rgba_ok(void *);
 const uint8_t *vt_read(void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
                        size_t *);
@@ -69,8 +66,8 @@ int64_t vt_strips(void *);
 int vt_check_tile(void *,uint32_t,uint32_t,uint32_t,uint16_t);
 int vt_compute_tile(void *,uint32_t,uint32_t,uint32_t,uint16_t,uint32_t *);
 int vt_compute_strip(void *,uint32_t,uint16_t,uint32_t *);
-/* The values TIFFGetField writes through the caller's pointers, and their C
-   types, as compat/src/get.rs plans them. */
+/* The values TIFFGetField writes through the caller's pointers, or
+   TIFFSetField reads from its arguments, and their C types. */
 enum { VT_U8, VT_I8, VT_U16, VT_I16, VT_U32, VT_I32, VT_U64, VT_I64, VT_FLOAT, VT_DOUBLE, VT_POINTER };
 struct vt_value {
   uint32_t type;
@@ -83,6 +80,10 @@ struct vt_plan {
 };
 _Static_assert(sizeof(struct vt_value) == 24 && sizeof(struct vt_plan) == 80, "plan layout");
 int vt_get(void *, uint32_t, int, struct vt_plan *);
+/* TIFFSetField's argument types, and the field set from the arguments
+   (compat/src/set.rs). */
+int vt_set_plan(void *, uint32_t, struct vt_plan *);
+int vt_set(void *, uint32_t, const struct vt_plan *);
 /* Image positions, and the reads that set them (compat/src/index.rs). */
 enum { VT_ROW, VT_STRIP, VT_TILE };
 uint32_t vt_position(void *,uint32_t);

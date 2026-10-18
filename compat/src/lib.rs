@@ -74,6 +74,7 @@ mod index;
 mod fields;
 mod schema;
 mod get;
+mod set;
 use storage::{Buf,Mem,Memory,Source,Backend,ReadProc,SeekProc};
 use directory::*;
 use store::{Store,Values};
@@ -120,6 +121,17 @@ impl Handle{
         self.converted=Buf::new(0,&self.source.mem)?;self.directory_kind=0;self.data=data;self.meta=meta;self.page=page;self.chain_steps=0;self.stream=None;self.cache=None;self.rendered=None;self.jpeg_rgb=false;self.logluv16=false;self.position=[u32::MAX;3];Ok(())
     }
     fn source_channels(&self)->R<usize>{Ok(self.meta.ch)}
+    /// JPEGCOLORMODE or SGILOGDATAFMT: decode YCbCr JPEG as RGB, or LogLuv
+    /// as 16-bit integers.
+    fn mode(&mut self,key:u32,v:i32)->R<()>{
+        self.stream=None;self.cache=None;
+        match key {
+            tag::JPEGCOLORMODE if self.meta.photo == 6 && (v == 0 || v == 1) => self.jpeg_rgb = v == 1,
+            tag::SGILOGDATAFMT if self.meta.photo == 32845 && (v==0||v==1) => self.logluv16 = v==1,
+            _ => return Err((NOTIMPL, "TIFFSetField mutation not implemented")),
+        }
+        Ok(())
+    }
     fn raw_row(&self,w:usize)->R<usize>{
         if self.ycbcr_raw(){let (hs,vs)=self.sampling()?;return Ok(product((w-1)/hs+1,hs*vs+2)?/vs);}
         if self.meta.photo==6 && matches!(self.meta.compression,6|7) && !self.jpeg_rgb{return Err((NOTIMPL,"native subsampled YCbCr not implemented; request JPEGCOLORMODE_RGB"));}
@@ -264,19 +276,6 @@ pub unsafe extern "C" fn vt_size(p: *mut c_void, kind: u32, rows: u32) -> i64 {
             return Err((LIMIT, "size overflow"));
         }
         Ok(size as i64)
-    })
-}
-#[no_mangle]
-pub unsafe extern "C" fn vt_mode(p: *mut c_void, key: u32, v: i32) -> i32 {
-    guard(0, || {
-        let h = handle(p)?;
-        h.stream=None;h.cache=None;
-        match key {
-            tag::JPEGCOLORMODE if h.meta.photo == 6 && (v == 0 || v == 1) => h.jpeg_rgb = v == 1,
-            tag::SGILOGDATAFMT if h.meta.photo == 32845 && (v==0||v==1) => h.logluv16 = v==1,
-            _ => return Err((NOTIMPL, "TIFFSetField mutation not implemented")),
-        }
-        Ok(1)
     })
 }
 #[no_mangle]

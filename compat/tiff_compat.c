@@ -269,7 +269,6 @@ static void free_client_info(TIFF *t);
 static int default_getfield(TIFF *,uint32_t,va_list);
 static int default_setfield(TIFF *,uint32_t,va_list);
 static int initialise_fields(TIFF *t);
-static int generic_setfield(TIFF *t,uint32_t tag,va_list ap);
 static TIFF *new_handle(const char *name, const char *mode,
                         TIFFOpenOptions *options) {
   if (!readmode(mode) && !writemode(mode)) {
@@ -576,16 +575,36 @@ int TIFFGetFieldDefaulted(TIFF *t, uint32_t k, ...) {
   va_end(ap);
   return r;
 }
+/* TIFFSetField reads the arguments compat/src/set.rs plans for the tag, each
+   with its C type, and Rust stores the field from them. */
 static int default_setfield(TIFF *t, uint32_t tag, va_list ap) {
-  if (!valid(t, __func__))
+  if (!valid(t, "TIFFSetField"))
     return 0;
-  if (tag != TIFFTAG_JPEGCOLORMODE && tag != TIFFTAG_SGILOGDATAFMT) {
-    return generic_setfield(t,tag,ap);
-  }
-  if (!vt_mode(t->state, tag, va_arg(ap, int))) {
-    bridge_fail(t, __func__);
+  struct vt_plan plan;
+  if (!vt_set_plan(t->state, tag, &plan)) {
+    bridge_fail(t, "TIFFSetField");
     return 0;
   }
+  for (size_t i = 0; i < plan.count; i++) {
+    struct vt_value *v = &plan.value[i];
+    switch (v->type) {
+    case VT_I32: v->bits = (uint64_t)(int64_t)va_arg(ap, int); break;
+    case VT_U32: v->bits = va_arg(ap, uint32_t); break;
+    case VT_U64: v->bits = va_arg(ap, uint64_t); break;
+    case VT_I64: v->bits = (uint64_t)va_arg(ap, int64_t); break;
+    case VT_DOUBLE: {
+      double d = va_arg(ap, double);
+      memcpy(&v->bits, &d, sizeof d);
+      break;
+    }
+    default: v->pointer = va_arg(ap, const void *); break;
+    }
+  }
+  if (!vt_set(t->state, tag, &plan)) {
+    bridge_fail(t, "TIFFSetField");
+    return 0;
+  }
+  t->directory_written = 0;
   return 1;
 }
 int TIFFVSetField(TIFF *t,uint32_t tag,va_list ap){

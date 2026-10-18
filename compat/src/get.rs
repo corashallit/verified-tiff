@@ -13,6 +13,7 @@ pub const U32: u32 = 4;
 pub const I32: u32 = 5;
 pub const U64: u32 = 6;
 pub const FLOAT: u32 = 8;
+pub const DOUBLE: u32 = 9;
 pub const POINTER: u32 = 10;
 
 /// One value C writes through, or reads from, a caller's argument.
@@ -36,7 +37,7 @@ const NONE: Value = Value {
     pointer: ptr::null(),
 };
 impl Plan {
-    fn of(values: &[Value]) -> Self {
+    pub fn of(values: &[Value]) -> Self {
         let mut v = Self {
             count: values.len(),
             value: [NONE; 3],
@@ -45,7 +46,7 @@ impl Plan {
         v
     }
 }
-fn word(kind: u32, bits: u64) -> Value {
+pub fn word(kind: u32, bits: u64) -> Value {
     Value {
         kind,
         bits,
@@ -111,6 +112,9 @@ const STRINGS: [u16; 12] = [
     tag::COPYRIGHT,
     tag::TARGETPRINTER,
 ];
+/// The tags of two 16-bit values, got through two pointers and set as two
+/// ints.
+pub const PAIRS: [u16; 4] = [tag::YCBCRSUBSAMPLING, tag::PAGENUMBER, tag::HALFTONEHINTS, tag::DOTRANGE];
 /// Opaque byte blocks, got with a 32-bit count.
 const BLOBS: [u16; 4] = [tag::ICCPROFILE, tag::XMLPACKET, tag::PHOTOSHOP, tag::JPEGTABLES];
 
@@ -252,7 +256,7 @@ impl Handle {
         Ok(Some([half(0)?, half(1)?]))
     }
     /// A 16-bit main directory field, defaulted, or `fallback`.
-    fn defaulted16(&mut self, key: u16, fallback: u16) -> R<u16> {
+    pub fn defaulted16(&mut self, key: u16, fallback: u16) -> R<u16> {
         Ok(match self.get(key.into(), true)? {
             Some(v) if v.count == 1 && v.value[0].kind == U16 => v.value[0].bits as u16,
             _ => fallback,
@@ -414,7 +418,7 @@ impl Handle {
             tag::XRESOLUTION | tag::YRESOLUTION | tag::XPOSITION | tag::YPOSITION => {
                 self.real(key)?.map(|v| Plan::of(&[word(FLOAT, v.to_bits().into())]))
             }
-            tag::YCBCRSUBSAMPLING | tag::PAGENUMBER | tag::HALFTONEHINTS | tag::DOTRANGE => self
+            _ if PAIRS.contains(&key) => self
                 .pair(key, defaulted)?
                 .map(|[a, b]| Plan::of(&[word(U16, a.into()), word(U16, b.into())])),
             _ => self.get_shaped(tag, defaulted)?,
