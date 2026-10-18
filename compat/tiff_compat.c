@@ -32,7 +32,7 @@ struct tiff {
   TIFFMapFileProc map;
   TIFFUnmapFileProc unmap;
   struct TIFFOpenOptions options;
-  uint32_t row, strip, tile, flags, directory_kind;
+  uint32_t flags, directory_kind;
   struct vt_field_node *fields;
   struct vt_client_info *client_info;
   TIFFTagMethods methods;
@@ -312,7 +312,6 @@ static TIFF *new_handle(const char *name, const char *mode,
   t->methods.vgetfield=default_getfield;t->methods.vsetfield=default_setfield;
   t->fd = -1;
   t->flags=modeflags(mode);
-  t->row = t->strip = t->tile = UINT32_MAX;
   return t;
 }
 static void destroy(TIFF *t) {
@@ -470,9 +469,9 @@ int TIFFIsUpSampled(TIFF *t) {
 }
 tdir_t TIFFCurrentDirectory(TIFF *t) { return (tdir_t)info(t, 2); }
 uint64_t TIFFCurrentDirOffset(TIFF *t) { return info(t, 3); }
-uint32_t TIFFCurrentRow(TIFF *t) { return t ? t->row : UINT32_MAX; }
-uint32_t TIFFCurrentStrip(TIFF *t) { return t ? t->strip : UINT32_MAX; }
-uint32_t TIFFCurrentTile(TIFF *t) { return t ? t->tile : UINT32_MAX; }
+uint32_t TIFFCurrentRow(TIFF *t) { return t ? vt_position(t->state, VT_ROW) : UINT32_MAX; }
+uint32_t TIFFCurrentStrip(TIFF *t) { return t ? vt_position(t->state, VT_STRIP) : UINT32_MAX; }
+uint32_t TIFFCurrentTile(TIFF *t) { return t ? vt_position(t->state, VT_TILE) : UINT32_MAX; }
 int TIFFLastDirectory(TIFF *t) { return valid(t, __func__) && info(t, 4) == 0; }
 tdir_t TIFFNumberOfDirectories(TIFF *t) {
   if (!valid(t, __func__))
@@ -489,7 +488,6 @@ int TIFFSetDirectory(TIFF *t, tdir_t d) {
     bridge_fail(t, __func__);
     return 0;
   }
-  t->row = t->strip = t->tile = UINT32_MAX;
   if (!initialise_fields(t,0)) return 0;
   unknown_warnings(t);
   return 1;
@@ -498,7 +496,6 @@ int TIFFReadDirectory(TIFF *t) {
   if (!valid(t, __func__) || TIFFLastDirectory(t))
     return 0;
   if (!vt_next(t->state)) { bridge_fail(t, __func__); return 0; }
-  t->row=t->strip=t->tile=UINT32_MAX;
   if (!initialise_fields(t,0)) return 0;
   unknown_warnings(t);
   return 1;
@@ -510,7 +507,6 @@ int TIFFSetSubDirectory(TIFF *t, uint64_t off) {
     bridge_fail(t, __func__);
     return 0;
   }
-  t->row = t->strip = t->tile = UINT32_MAX;
   if (!initialise_fields(t,0)) return 0;
   unknown_warnings(t);
   return 1;
@@ -747,14 +743,12 @@ tmsize_t TIFFVTileSize(TIFF *t, uint32_t n) {
 uint32_t TIFFNumberOfStrips(TIFF *t) {
   if (!valid(t, __func__))
     return 0;
-  if (!TIFFIsTiled(t) && info(t, 0))
-    return (uint32_t)info(t, 7);
-  /* Like libtiff, a tiled image, or a handle with no directory yet, has the
-     strips its RowsPerStrip implies. */
-  uint64_t rows = info(t, 10), h = info(t, 1);
-  uint64_t n = rows == 0 || rows >= h ? 1 : (h - 1) / rows + 1;
-  n = info(t, 11) == 2 ? n * info(t, 12) : n;
-  return n > UINT32_MAX ? 0 : (uint32_t)n;
+  int64_t n = vt_strips(t->state);
+  if (n < 0) {
+    bridge_fail(t, __func__);
+    return 0;
+  }
+  return (uint32_t)n;
 }
 uint32_t TIFFNumberOfTiles(TIFF *t) { return (uint32_t)info(t, 7); }
 static uint64_t strile(TIFF *t, uint32_t index, int counts, int *error) {
@@ -796,36 +790,32 @@ tmsize_t TIFFRawStripSize(TIFF *t, uint32_t k) {
 int TIFFCheckTile(TIFF *t, uint32_t x, uint32_t y, uint32_t z, uint16_t s) {
   if (!valid(t, __func__))
     return 0;
-  /* Like libtiff, a strip image's tiles are its strips, and a contiguous
-   * image ignores the sample. */
-  if (x >= info(t, 0) || y >= info(t, 1) || z != 0 ||
-      (info(t, 11) == 2 && s >= info(t, 12))) {
-    fail(t, EINVAL, __func__, "invalid tile coordinates/plane");
+  if (!vt_check_tile(t->state, x, y, z, s)) {
+    bridge_fail(t, __func__);
     return 0;
   }
   return 1;
 }
 uint32_t TIFFComputeTile(TIFF *t, uint32_t x, uint32_t y, uint32_t z,
                          uint16_t s) {
-  if (!TIFFCheckTile(t, x, y, z, s))
-    return UINT32_MAX;
-  uint64_t across = (info(t, 0) - 1) / info(t, 8) + 1;
-  uint64_t down = (info(t, 1) - 1) / info(t, 9) + 1;
-  return (uint32_t)((y / info(t, 9)) * across + x / info(t, 8) +
-                    (info(t, 11) == 2 ? s * across * down : 0));
-}
-uint32_t TIFFComputeStrip(TIFF *t, uint32_t row, uint16_t s) {
+  uint32_t k = 0;
   if (!valid(t, __func__))
     return UINT32_MAX;
-  if (row >= info(t, 1) || (info(t, 11) == 2 && s >= info(t, 12))) {
-    fail(t, EINVAL, __func__, "invalid strip row/plane");
+  if (!vt_compute_tile(t->state, x, y, z, s, &k)) {
+    bridge_fail(t, __func__);
     return UINT32_MAX;
   }
-  /* Like libtiff, a tiled image's strips follow RowsPerStrip, and planes are
-   * a plane's strips or tiles apart. */
-  uint64_t rows = TIFFIsTiled(t) ? info(t, 10) : info(t, 9);
-  uint64_t per = info(t, 7) / (info(t, 11) == 2 ? info(t, 12) : 1);
-  return (uint32_t)(row / rows + (info(t, 11) == 2 ? s * per : 0));
+  return k;
+}
+uint32_t TIFFComputeStrip(TIFF *t, uint32_t row, uint16_t s) {
+  uint32_t k = 0;
+  if (!valid(t, __func__))
+    return UINT32_MAX;
+  if (!vt_compute_strip(t->state, row, s, &k)) {
+    bridge_fail(t, __func__);
+    return UINT32_MAX;
+  }
+  return k;
 }
 static tmsize_t read_bytes(TIFF *t, unsigned kind, uint32_t a, uint32_t b,
                            void *buf, tmsize_t size) {
@@ -856,27 +846,19 @@ int TIFFReadScanline(TIFF *t, void *buf, uint32_t row, uint16_t sample) {
   tmsize_t n = read_bytes(t, 0, row, sample, buf, -1);
   if (n < 0)
     return -1;
-  t->row = row + 1;
-  t->strip = TIFFComputeStrip(t, row, sample);
+  vt_advance(t->state, VT_ROW, row, sample);
   return 1;
 }
 tmsize_t TIFFReadEncodedStrip(TIFF *t, uint32_t k, void *b, tmsize_t n) {
   tmsize_t r = read_bytes(t, 1, k, 0, b, n);
-  if (r >= 0) {
-    t->strip = k;
-    uint64_t per = (info(t, 1) - 1) / info(t, 9) + 1;
-    t->row = (uint32_t)((k % per) * info(t, 9));
-  }
+  if (r >= 0)
+    vt_advance(t->state, VT_STRIP, k, 0);
   return r;
 }
 tmsize_t TIFFReadEncodedTile(TIFF *t, uint32_t k, void *b, tmsize_t n) {
   tmsize_t r = read_bytes(t, 2, k, 0, b, n);
-  if (r >= 0) {
-    t->tile = k;
-    uint64_t across = (info(t, 0) - 1) / info(t, 8) + 1;
-    uint64_t down = (info(t, 1) - 1) / info(t, 9) + 1;
-    t->row = (uint32_t)(((k / across) % down) * info(t, 9));
-  }
+  if (r >= 0)
+    vt_advance(t->state, VT_TILE, k, 0);
   return r;
 }
 tmsize_t TIFFReadRawStrip(TIFF *t, uint32_t k, void *b, tmsize_t n) {

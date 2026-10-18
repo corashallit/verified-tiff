@@ -142,7 +142,11 @@ pub unsafe extern "C" fn vt_custom_dir(p:*mut c_void,off:u64,kind:u32)->i32{
     guard(0,||{let h=handle(p)?;let (data,tags,next,_)=raw_metadata(&mut h.source,h.header,off,&h.limits,false)?;
         let (_,mut meta)=empty_metadata(&h.source.mem,h.header)?;meta.tags=tags;meta.off=off;meta.next=next;
         let converted=Buf::new(0,&h.source.mem)?;let data=Store::new(data,&h.source.mem)?;
-        h.converted=converted;h.meta=meta;h.data=data;h.page=u32::MAX;h.directory_kind=kind;h.stream=None;h.cache=None;h.rendered=None;Ok(1)})
+        h.converted=converted;h.meta=meta;h.data=data;h.page=u32::MAX;h.directory_kind=kind;h.stream=None;h.cache=None;h.rendered=None;
+        // Reading a custom directory forgets the image position; EXIF and GPS
+        // directories keep it.
+        if kind==3{h.position=[u32::MAX;3];}
+        Ok(1)})
 }
 #[no_mangle]
 pub unsafe extern "C" fn vt_mem_claim(p:*mut c_void,n:usize)->i32{guard(0,||{handle(p)?.source.mem.claim(n)?;Ok(1)})}

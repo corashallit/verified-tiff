@@ -70,6 +70,7 @@ mod color;
 mod metadata;
 mod writer;
 mod store;
+mod index;
 use storage::{Buf,Mem,Memory,Source,Backend,ReadProc,SeekProc};
 use directory::*;
 use store::{Store,Values};
@@ -90,6 +91,8 @@ struct Meta{
 struct Handle{
     source:Source,header:container::Header,data:Store,meta:Meta,page:u32,limits:Limits,
     work:usize,chain_steps:usize,chain:Buf<u64>,stream:Option<stream::Cached>,cache:Option<(usize,Buf<u8>)>,rendered:Option<Buf<u8>>,jpeg_rgb:bool,logluv16:bool,chop:bool,deferred:bool,converted:Buf<metadata::Converted>,directory_kind:u32,writing:bool,
+    /// libtiff's current row, strip and tile.
+    position:[u32;3],
 }
 impl Handle{
     fn open(mut source:Source,output:usize,work:usize,flags:u32)->R<Self>{
@@ -103,12 +106,12 @@ impl Handle{
         let mut chain=Buf::new(1,&source.mem)?;if meta.off!=0{chain.push(meta.off)?;}
         // Like libtiff, a header-only open has no current directory yet.
         let page=if !writing&&flags&2!=0{u32::MAX}else{0};
-        Ok(Self{writing,converted,directory_kind:0,source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
+        Ok(Self{writing,converted,directory_kind:0,position:[u32::MAX;3],source,header,data,meta,page,limits,work,chain_steps:0,chain,stream:None,cache:None,rendered:None,jpeg_rgb:false,logluv16:false,chop,deferred})
     }
     fn set_offset(&mut self,off:u64,page:u32)->R<()>{
         let (data,meta)=metadata(&mut self.source,self.header,off,&self.limits,self.chop,self.deferred)?;
         let data=Store::new(data,&self.source.mem)?;
-        self.converted=Buf::new(0,&self.source.mem)?;self.directory_kind=0;self.data=data;self.meta=meta;self.page=page;self.chain_steps=0;self.stream=None;self.cache=None;self.rendered=None;self.jpeg_rgb=false;self.logluv16=false;Ok(())
+        self.converted=Buf::new(0,&self.source.mem)?;self.directory_kind=0;self.data=data;self.meta=meta;self.page=page;self.chain_steps=0;self.stream=None;self.cache=None;self.rendered=None;self.jpeg_rgb=false;self.logluv16=false;self.position=[u32::MAX;3];Ok(())
     }
     fn source_channels(&self)->R<usize>{Ok(self.meta.ch)}
     fn raw_row(&self,w:usize)->R<usize>{
@@ -448,7 +451,7 @@ pub unsafe extern "C" fn vt_unset(p:*mut c_void,key:u32)->i32{
 pub unsafe extern "C" fn vt_free_directory(p:*mut c_void)->i32{
     guard(0,||{let h=handle(p)?;let (data,mut meta)=empty_metadata(&h.source.mem,h.header)?;
         meta.off=h.meta.off;meta.next=h.meta.next;let data=Store::new(data,&h.source.mem)?;
-        h.meta=meta;h.data=data;h.converted=Buf::new(0,&h.source.mem)?;h.stream=None;h.cache=None;h.rendered=None;Ok(1)})
+        h.meta=meta;h.data=data;h.converted=Buf::new(0,&h.source.mem)?;h.stream=None;h.cache=None;h.rendered=None;h.position=[u32::MAX;3];Ok(1)})
 }
 
 #[no_mangle]

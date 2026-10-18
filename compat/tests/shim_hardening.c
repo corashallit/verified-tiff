@@ -57,6 +57,8 @@ WRAP_INT1(vt_next) WRAP_INT1(vt_free_directory) WRAP_INT1(vt_write_check) WRAP_I
 WRAP_INT2(vt_select,uint32_t) WRAP_INT2(vt_set_offset,uint64_t) WRAP_INT2(vt_mem_claim,size_t) WRAP_INT2(vt_unset,uint32_t) WRAP_INT2(vt_clientdata,thandle_t)
 uint64_t __real_vt_info(void*,uint32_t);
 uint64_t __wrap_vt_info(void*p,uint32_t k){return injecting("vt_info",k)?fault_value:__real_vt_info(p,k);}
+int64_t __real_vt_strips(void*);
+int64_t __wrap_vt_strips(void*p){return injecting("vt_strips",0)?(int64_t)fault_value:__real_vt_strips(p);}
 uint32_t __real_vt_count_dirs(void*);
 uint32_t __wrap_vt_count_dirs(void*p){return injecting("vt_count_dirs",0)?(uint32_t)fault_value:__real_vt_count_dirs(p);}
 int64_t __real_vt_size(void*,uint32_t,uint32_t);
@@ -136,7 +138,7 @@ static void null_test(void){
  assert(!TIFFIsBigEndian(NULL)&&!TIFFIsByteSwapped(NULL)&&!TIFFIsMSB2LSB(NULL)&&!TIFFIsUpSampled(NULL)&&!TIFFLastDirectory(NULL));
  assert(!TIFFNumberOfDirectories(NULL)&&!TIFFNumberOfStrips(NULL)&&!TIFFSetDirectory(NULL,0)&&!TIFFReadDirectory(NULL)&&!TIFFSetSubDirectory(NULL,0));
  assert(!TIFFReadEXIFDirectory(NULL,0)&&!TIFFReadGPSDirectory(NULL,0));
- assert(!TIFFScanlineSize(NULL)&&!TIFFGetStrileOffset(NULL,0));assert(TIFFComputeTile(NULL,0,0,0,0)==UINT32_MAX&&TIFFComputeStrip(NULL,0,0)==UINT32_MAX);
+ assert(!TIFFScanlineSize(NULL)&&!TIFFGetStrileOffset(NULL,0));assert(TIFFComputeTile(NULL,0,0,0,0)==UINT32_MAX&&TIFFComputeStrip(NULL,0,0)==UINT32_MAX&&!TIFFCheckTile(NULL,0,0,0,0));
  assert(TIFFReadScanline(NULL,b,0,0)==-1&&TIFFReadEncodedStrip(NULL,0,b,1)==-1&&TIFFReadEncodedTile(NULL,0,b,1)==-1&&TIFFReadRawStrip(NULL,0,b,1)==-1&&TIFFReadRawTile(NULL,0,b,1)==-1&&TIFFReadTile(NULL,b,0,0,0,0)==-1);
  assert(!TIFFReadRGBAImage(NULL,1,1,rgba_buf,0)&&!TIFFRGBAImageOK(NULL,message)&&!TIFFRGBAImageBegin(NULL,NULL,0,message));
  assert(!TIFFRGBAImageGet(NULL,rgba_buf,1,1));TIFFRGBAImageEnd(NULL);TIFFClose(NULL);TIFFCleanup(NULL);
@@ -191,6 +193,7 @@ static void bridge_failures_test(void){
  TIFF*t=gray();uint8_t b[64];uint32_t r[64];char msg[1024];uint32_t u=0xa5a5a5a5;uint16_t h=0xa5a5;
  inject("vt_info",0);fault_value=UINT64_MAX;assert(!TIFFIsTiled(t));clear_fault();
  inject("vt_count_dirs",0);assert(!TIFFNumberOfDirectories(t));clear_fault();
+ inject("vt_strips",0);fault_value=UINT64_MAX;assert(!TIFFNumberOfStrips(t));clear_fault();
  inject("vt_size",0);fault_value=UINT64_MAX;assert(!TIFFScanlineSize64(t));clear_fault();
  inject("vt_scalar",-1);assert(!TIFFGetField(t,256,&u)&&u==0xa5a5a5a5);clear_fault();
  inject("vt_scalar",1);fault_value=UINT64_MAX;assert(!TIFFGetField(t,256,&u)&&u==0xa5a5a5a5);assert(!TIFFGetField(t,258,&h)&&h==0xa5a5);int v=71;assert(!TIFFGetField(t,TIFFTAG_JPEGCOLORMODE,&v)&&v==71);clear_fault();

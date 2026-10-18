@@ -49,4 +49,12 @@ uint16_t vt_host_type(uint16_t);
 uint32_t vt_color_index(uint32_t,uint32_t);
 uint32_t vt_ycbcr_tables(int32_t,int32_t,int32_t,int32_t,int32_t);
 int vt_commit(uint8_t *,size_t,size_t,const uint8_t *,size_t);
+int64_t vt_strips(void *);
+int vt_check_tile(void *,uint32_t,uint32_t,uint32_t,uint16_t);
+int vt_compute_tile(void *,uint32_t,uint32_t,uint32_t,uint16_t,uint32_t *);
+int vt_compute_strip(void *,uint32_t,uint16_t,uint32_t *);
+/* Image positions, and the reads that set them (compat/src/index.rs). */
+enum { VT_ROW, VT_STRIP, VT_TILE };
+uint32_t vt_position(void *,uint32_t);
+void vt_advance(void *,uint32_t,uint32_t,uint32_t);
 #endif

@@ -32,7 +32,6 @@ int TIFFUnsetField(TIFF *t,uint32_t tag){
 void TIFFFreeDirectory(TIFF *t){
   if(!valid(t,__func__))return;
   if(!vt_free_directory(t->state)){bridge_fail(t,__func__);return;}
-  t->row=t->strip=t->tile=UINT32_MAX;
 }
 static int reader_codec_init(TIFF *t,int scheme){
   uint16_t current=0;
@@ -116,7 +115,7 @@ int TIFFReadCustomDirectory(TIFF *t,toff_t off,const TIFFFieldArray *array){
   if(!vt_custom_dir(t->state,off,3)){bridge_fail(t,__func__);goto fail;}
   struct vt_field_node **link=&t->fields;int old=0;
   while(*link){struct vt_field_node *p=*link;if(p==head)old=1;if(old&&p->dir==3){*link=p->next;t->field_count--;vt_mem_release(t->state,p->charge);free(p);}else link=&p->next;}
-  t->row=t->strip=t->tile=UINT32_MAX;return 1;
+  return 1;
 fail:
   while(t->fields!=head){struct vt_field_node *p=t->fields;t->fields=p->next;t->field_count--;vt_mem_release(t->state,p->charge);free(p);}
   t->directory_kind=prior;return 0;

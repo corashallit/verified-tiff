@@ -82,4 +82,152 @@ pub fn orientation(source:usize,target:usize)->(r:Result<(bool,bool),Error>)
     let s=(source-1)%4;let t=(target-1)%4;
     Ok(((s==1||s==2)!=(t==1||t==2),(s>=2)!=(t>=2)))
 }
+
+/// TIFFNumberOfStrips for a tiled image, or a handle with no directory yet:
+/// like libtiff, one strip per RowsPerStrip rows of each plane, and a single
+/// strip when RowsPerStrip is 0 or covers the image. A count that does not
+/// fit 32 bits reads as 0.
+pub open spec fn implied_strips(rows: int, height: int, planes: int) -> int {
+    (if rows == 0 || rows >= height { 1 } else { (height - 1) / rows + 1 }) * planes
+}
+/// `planes` is 1 for contiguous samples, and the samples per pixel otherwise.
+pub fn strips_from_rows(rows: u64, height: u32, planes: u16) -> (r: u32)
+    ensures
+        r == (if implied_strips(rows as int, height as int, planes as int) <= u32::MAX {
+            implied_strips(rows as int, height as int, planes as int)
+        } else {
+            0
+        }),
+{
+    let per: u64 = if rows == 0 || rows >= height as u64 {
+        1
+    } else {
+        proof {
+            quotient_remainder(height as int - 1, rows as int);
+            assert((height as int - 1) / (rows as int) <= height as int - 1) by (nonlinear_arith)
+                requires
+                    height as int - 1 == rows as int * ((height as int - 1) / (rows as int))
+                        + (height as int - 1) % (rows as int),
+                    (height as int - 1) % (rows as int) >= 0,
+                    (height as int - 1) / (rows as int) >= 0,
+                    rows >= 1;
+        }
+        (height as u64 - 1) / rows + 1
+    };
+    assert(per as int * planes <= 0x1_0000_0000 * 0xffff) by (nonlinear_arith)
+        requires per <= 0x1_0000_0000, planes <= 0xffff;
+    let n = per * planes as u64;
+    if n > u32::MAX as u64 { 0 } else { n as u32 }
+}
+
+/// TIFFCheckTile: like libtiff, a strip image's tiles are its strips, and an
+/// image with contiguous samples ignores the sample. `separate` says whether
+/// each of the `samples` has its own plane.
+pub open spec fn tile_valid(width: u32, height: u32, separate: bool, samples: u16, x: u32, y: u32, z: u32, s: u16) -> bool {
+    x < width && y < height && z == 0 && (!separate || s < samples)
+}
+pub fn check_tile(width: u32, height: u32, separate: bool, samples: u16, x: u32, y: u32, z: u32, s: u16) -> (r: bool)
+    ensures r == tile_valid(width, height, separate, samples, x, y, z, s),
+{
+    x < width && y < height && z == 0 && (!separate || s < samples)
+}
+
+/// Tile `x / bw` of row `y / bh` in plane `plane`, as libtiff's
+/// TIFFComputeTile numbers it: modulo 2^32, like its 32-bit arithmetic.
+pub open spec fn tile_number(width: int, height: int, bw: int, bh: int, plane: int, x: int, y: int) -> int {
+    ((plane * ((height - 1) / bh + 1) + y / bh) * ((width - 1) / bw + 1) + x / bw) % 0x1_0000_0000
+}
+pub fn tile_index(width: u32, height: u32, bw: u32, bh: u32, separate: bool, samples: u16, x: u32, y: u32, z: u32, s: u16)
+    -> (r: Result<u32, Error>)
+    ensures
+        r.is_ok() == (tile_valid(width, height, separate, samples, x, y, z, s) && bw > 0 && bh > 0),
+        r.is_ok() ==> r.unwrap() == tile_number(width as int, height as int, bw as int, bh as int,
+            if separate { s as int } else { 0 }, x as int, y as int),
+{
+    if !check_tile(width, height, separate, samples, x, y, z, s) || bw == 0 || bh == 0 {
+        return Err(Error::Invalid);
+    }
+    let across = ((width - 1) / bw) as u128 + 1;
+    let down = ((height - 1) / bh) as u128 + 1;
+    let plane: u128 = if separate { s as u128 } else { 0 };
+    let by = (y / bh) as u128;
+    let bx = (x / bw) as u128;
+    proof {
+        vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(width as int - 1, 1, bw as int);
+        vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(height as int - 1, 1, bh as int);
+        vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(y as int, 1, bh as int);
+        vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(x as int, 1, bw as int);
+    }
+    assert(plane * down + by <= 0xffff * 0x1_0000_0000 + 0xffff_ffff) by (nonlinear_arith)
+        requires plane <= 0xffff, down <= 0x1_0000_0000, by <= 0xffff_ffff;
+    assert((plane * down + by) * across + bx <= (0xffff * 0x1_0000_0000 + 0xffff_ffff) * 0x1_0000_0000 + 0xffff_ffff)
+        by (nonlinear_arith)
+        requires plane * down + by <= 0xffff * 0x1_0000_0000 + 0xffff_ffff, across <= 0x1_0000_0000, bx <= 0xffff_ffff;
+    let n = (plane * down + by) * across + bx;
+    Ok((n % 0x1_0000_0000) as u32)
+}
+
+/// TIFFComputeStrip: strip `row / rows` of plane `plane`, whose strips start
+/// `per` apart, modulo 2^32 like libtiff's 32-bit arithmetic.
+pub open spec fn strip_number(row: int, rows: int, plane: int, per: int) -> int {
+    (row / rows + plane * per) % 0x1_0000_0000
+}
+/// `rows` is RowsPerStrip, or the strip height of a strip image, and
+/// `segments` the strips or tiles of the whole image.
+pub fn strip_index(height: u32, rows: u64, segments: u64, separate: bool, samples: u16, row: u32, s: u16)
+    -> (r: Result<u32, Error>)
+    ensures
+        r.is_ok() == (row < height && (!separate || s < samples) && rows > 0),
+        r.is_ok() ==> r.unwrap() == strip_number(row as int, rows as int,
+            if separate { s as int } else { 0 }, if separate { segments as int / (samples as int) } else { segments as int }),
+{
+    if row >= height || separate && s >= samples || rows == 0 {
+        return Err(Error::Invalid);
+    }
+    let per = if separate { segments / samples as u64 } else { segments };
+    let plane: u128 = if separate { s as u128 } else { 0 };
+    proof {
+        vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(row as int, 1, rows as int);
+    }
+    assert(plane * per as u128 <= 0xffff * 0xffff_ffff_ffff_ffff) by (nonlinear_arith)
+        requires plane <= 0xffff, per <= 0xffff_ffff_ffff_ffff;
+    let n = (row as u64 / rows) as u128 + plane * per as u128;
+    Ok((n % 0x1_0000_0000) as u32)
+}
+
+/// The first row of a strip, or of a tile in the column of tile rows that
+/// `index` counts: like libtiff, rows repeat in each plane.
+pub open spec fn first_row(index: int, height: int, bh: int) -> int {
+    (index % ((height - 1) / bh + 1)) * bh
+}
+pub fn segment_row(index: u32, height: u32, bh: u32) -> (r: Result<u32, Error>)
+    ensures
+        r.is_ok() == (height > 0 && bh > 0),
+        r.is_ok() ==> r.unwrap() == first_row(index as int, height as int, bh as int) && r.unwrap() < height,
+{
+    if height == 0 || bh == 0 {
+        return Err(Error::Invalid);
+    }
+    let per = (height - 1) / bh + 1;
+    let k = index % per;
+    proof {
+        quotient_remainder(height as int - 1, bh as int);
+        quotient_remainder(index as int, per as int);
+        assert(k as int * bh <= ((height as int - 1) / (bh as int)) * bh) by (nonlinear_arith)
+            requires k < per, per == (height as int - 1) / (bh as int) + 1, bh > 0;
+    }
+    Ok(k * bh)
+}
+/// The first row of tile `index`, whose tile rows each hold `across` tiles.
+pub fn tile_row(index: u32, width: u32, height: u32, bw: u32, bh: u32) -> (r: Result<u32, Error>)
+    ensures
+        r.is_ok() == (width > 0 && height > 0 && bw > 0 && bh > 0),
+        r.is_ok() ==> r.unwrap() == first_row(index as int / ((width as int - 1) / (bw as int) + 1), height as int, bh as int)
+            && r.unwrap() < height,
+{
+    if width == 0 || bw == 0 {
+        return Err(Error::Invalid);
+    }
+    segment_row(index / ((width - 1) / bw + 1), height, bh)
+}
 }
